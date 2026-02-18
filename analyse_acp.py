@@ -41,15 +41,15 @@ st.markdown("---")
 def charger_data(file, sheet):
     try:
         df = pd.read_excel(file, sheet_name=sheet, header=None, engine='openpyxl')
-        # Nettoyage initial des lignes et colonnes totalement vides
         df = df.dropna(how='all', axis=0).dropna(how='all', axis=1).reset_index(drop=True)
         
-        # Détection de la ligne d'en-tête (cherche une date JJ/MM)
-        idx_dates = 0
-        for i in range(min(15, len(df))):
-            if df.iloc[i].astype(str).str.contains(r'\d{2}/\d{2}', regex=True).any():
-                idx_dates = i
-                break
+        # Détection de la ligne d'en-tête (Dates)
+        idx_dates = 1 if sheet != "ProductionPlanning" else 0
+        if sheet == "ProductionPlanning":
+            for i in range(min(15, len(df))):
+                if df.iloc[i].astype(str).str.contains(r'\d{2}/\d{2}', regex=True).any():
+                    idx_dates = i
+                    break
         
         headers = df.iloc[idx_dates].fillna("Info").tolist()
         df_data = df.iloc[idx_dates + 1:].copy()
@@ -68,16 +68,14 @@ def charger_data(file, sheet):
         
         df_data.columns = new_cols
 
-        # Logique spécifique Production Planning (Suppression A et B)
+        # Spécifique Production Planning (Suppression A et B)
         if sheet == "ProductionPlanning":
             df_data = df_data.iloc[:, 2:]
             if not df_data.empty:
-                # Injection manuelle de "atterissage ACP 29"
-                cols_inf = [c for c in df_data.columns if "Info" in c]
-                target_col = cols_inf[1] if len(cols_inf) > 1 else df_data.columns[0]
-                df_data[target_col] = df_data[target_col].astype(object)
-                df_data.loc[1:, target_col] = None 
-                df_data.loc[0, target_col] = "atterissage ACP 29"
+                col_target = [c for c in df_data.columns if "Info" in c][1] if len([c for c in df_data.columns if "Info" in c]) > 1 else df_data.columns[0]
+                df_data[col_target] = df_data[col_target].astype(object)
+                df_data.loc[1:, col_target] = None 
+                df_data.loc[0, col_target] = "atterissage ACP 29"
         
         return df_data.reset_index(drop=True)
     except Exception as e:
@@ -102,33 +100,34 @@ if source:
     if not df_brut.empty:
         df = df_brut.copy()
         
-        # Identification des dates
+        # Identification des colonnes de dates
         dates_disponibles = [c for c in df.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
         cols_infos = [c for c in df.columns if c not in dates_disponibles]
         
-        # Nettoyage numérique
+        # Nettoyage numérique des colonnes de dates
         for d_col in dates_disponibles:
             df[d_col] = pd.to_numeric(df[d_col], errors='coerce').fillna(0)
 
         if btn_focus:
-            # --- NETTOYAGE STRICT : AUCUNE COLONNE VIDE ---
+            # --- NETTOYAGE STRICT DES COLONNES VIDES ---
             df_focus = df.iloc[[0]].copy()
             
+            # On ne garde que les colonnes où la valeur n'est ni 0, ni None, ni vide
             def est_valide(val):
                 s_val = str(val).strip().lower()
-                # On élimine : zéros, None, vide, nan, et les noms génériques "info"
-                return val != 0 and pd.notna(val) and s_val not in ["", "none", "nan", "info"]
+                return val != 0 and pd.notna(val) and s_val != "" and s_val != "none" and s_val != "nan"
 
-            # On filtre toutes les colonnes pour ne garder que celles ayant une valeur réelle
             cols_a_garder = [c for c in df_focus.columns if est_valide(df_focus[c].iloc[0])]
+            
             df_final = df_focus[cols_a_garder]
             
             st.markdown(f'<div class="header-vert">RÉCAPITULATIF ATTERRISSAGE : {choix_feuille}</div>', unsafe_allow_html=True)
             
             if not df_final.empty:
+                # Affichage propre sans colonnes inutiles
                 st.table(df_final)
             else:
-                st.warning("Aucune donnée avec valeur trouvée sur cette ligne.")
+                st.warning("Aucune donnée avec valeur trouvée pour cette ligne.")
         else:
             # Mode normal
             selection_dates = st.sidebar.multiselect("📅 Filtrer par Date(s) :", dates_disponibles)
@@ -148,5 +147,5 @@ if source:
         df_export.to_excel(output, index=False)
         st.sidebar.download_button("📥 Télécharger ce tableau", data=output.getvalue(), file_name=f"Focus_{choix_feuille}.xlsx")
 else:
-    st.info("👋 Veuillez charger un fichier Excel pour commencer.")
+    st.info("👋 Veuillez charger un fichier Excel.")
 
