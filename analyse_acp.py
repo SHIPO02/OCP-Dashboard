@@ -186,3 +186,4 @@ if source:
             st.sidebar.download_button("📥 Télécharger Excel", data=output.getvalue(), file_name=f"{choix_feuille}.xlsx")
 else:
     st.info("👋 Veuillez charger un fichier Excel.")
+
