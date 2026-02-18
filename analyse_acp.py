@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import os
 import io
-from datetime import datetime
 
 # --- 1. CONFIGURATION ET STYLE OCP ---
 st.set_page_config(page_title="OCP - Dashboard S&OE Expert", layout="wide")
@@ -22,13 +21,6 @@ st.markdown("""
     text-align: center;
     font-size: 18px;
     margin-top: 10px;
-}
-.kpi-total {
-    background-color: #f0f2f6;
-    padding: 15px;
-    border-radius: 10px;
-    border-left: 5px solid #83B81A;
-    margin-bottom: 20px;
 }
 .spacer { margin-bottom: 40px; }
 </style>
@@ -53,12 +45,13 @@ def charger_data(file, sheet):
         df = pd.read_excel(file, sheet_name=sheet, header=None, engine='openpyxl')
         df = df.dropna(how='all', axis=0).dropna(how='all', axis=1).reset_index(drop=True)
         
-        # Détection de la ligne d'en-tête (Dates JJ/MM)
-        idx_dates = 0
-        for i in range(min(15, len(df))):
-            if df.iloc[i].astype(str).str.contains(r'\d{2}/\d{2}', regex=True).any():
-                idx_dates = i
-                break
+        # Détection de la ligne d'en-tête (Dates)
+        idx_dates = 1 if sheet != "ProductionPlanning" else 0
+        if sheet == "ProductionPlanning":
+            for i in range(min(15, len(df))):
+                if df.iloc[i].astype(str).str.contains(r'\d{2}/\d{2}', regex=True).any():
+                    idx_dates = i
+                    break
         
         headers = df.iloc[idx_dates].fillna("Info").tolist()
         df_data = df.iloc[idx_dates + 1:].copy()
@@ -77,12 +70,14 @@ def charger_data(file, sheet):
         
         df_data.columns = new_cols
 
+        # Spécifique Production Planning (Suppression colonnes A et B)
         if sheet == "ProductionPlanning":
             df_data = df_data.iloc[:, 2:]
             if not df_data.empty:
-                cols_inf = [c for c in df_data.columns if "Info" in c]
-                target = cols_inf[1] if len(cols_inf) > 1 else df_data.columns[0]
-                df_data.loc[0, target] = "atterissage ACP 29"
+                col_target = [c for c in df_data.columns if "Info" in c][1] if len([c for c in df_data.columns if "Info" in c]) > 1 else df_data.columns[0]
+                df_data[col_target] = df_data[col_target].astype(object)
+                df_data.loc[1:, col_target] = None 
+                df_data.loc[0, col_target] = "atterissage ACP 29"
         
         return df_data.reset_index(drop=True)
     except Exception as e:
@@ -101,82 +96,70 @@ local_file = os.path.join(dossier, "Inventory Projection.xlsm")
 source = uploaded_file if uploaded_file else (local_file if os.path.exists(local_file) else None)
 
 st.sidebar.markdown("---")
-btn_global = st.sidebar.toggle("🎯 Atterrissage Global")
+btn_focus = st.sidebar.toggle("🎯 Atterrissage Global")
+
+if not btn_focus:
+    choix_feuille = st.sidebar.radio("Sélectionner la feuille :", ["ACP", "ACS", "ProductionPlanning"])
+else:
+    st.sidebar.info("Vue consolidée de toutes les feuilles activée.")
 
 # --- 5. LOGIQUE PRINCIPALE ---
 if source:
-    if btn_global:
-        # --- VUE : ATTERRISSAGE GLOBAL (CONSOLIDÉ) ---
+    if btn_focus:
+        # --- VUE : ATTERRISSAGE GLOBAL ---
         st.subheader("📊 Atterrissage Global")
+        
         for feuille in ["ACP", "ACS", "ProductionPlanning"]:
-            df_f = charger_data(source, feuille)
-            if not df_f.empty:
-                # Nettoyage pour calcul
-                dates_d = [c for c in df_f.columns if any(char.isdigit() for char in str(c))]
-                for d in dates_d:
-                    df_f[d] = pd.to_numeric(df_f[d], errors='coerce').fillna(0)
+            df_feuille = charger_data(source, feuille)
+            if not df_feuille.empty:
+                # Identification et nettoyage numérique des dates
+                dates_dispo = [c for c in df_feuille.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
+                for d in dates_dispo:
+                    df_feuille[d] = pd.to_numeric(df_feuille[d], errors='coerce').fillna(0)
                 
-                df_focus = df_f.iloc[[0]].copy()
+                # Extraction de la ligne 1 (index 0)
+                df_focus = df_feuille.iloc[[0]].copy()
+                
+                # Filtrage strict des colonnes vides ou à 0
                 cols_utiles = [c for c in df_focus.columns if est_valide(df_focus[c].iloc[0])]
                 df_final = df_focus[cols_utiles]
                 
+                # Affichage
                 st.markdown(f'<div class="header-vert">ATTERRISSAGE : {feuille}</div>', unsafe_allow_html=True)
                 if not df_final.empty:
                     st.table(df_final)
                 else:
-                    st.warning(f"Aucune donnée active pour {feuille}")
+                    st.warning(f"Aucune donnée active détectée pour la feuille {feuille}")
                 st.markdown('<div class="spacer"></div>', unsafe_allow_html=True)
     
     else:
-        # --- VUE : ANALYSE PAR FEUILLE AVEC FILTRES ---
-        choix_feuille = st.sidebar.radio("Sélectionner la feuille :", ["ACP", "ACS", "ProductionPlanning"])
-        df = charger_data(source, choix_feuille)
-        
-        if not df.empty:
-            dates_cols = [c for c in df.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
-            info_cols = [c for c in df.columns if c not in dates_cols]
+        # --- VUE : NORMALE (PAR FEUILLE) ---
+        df_brut = charger_data(source, choix_feuille)
+        if not df_brut.empty:
+            df = df_brut.copy()
+            dates_disponibles = [c for c in df.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
+            cols_infos = [c for c in df.columns if c not in dates_disponibles]
             
-            # Conversion pour filtrage temporel
-            dates_dt = []
-            for d in dates_cols:
-                try:
-                    dates_dt.append(pd.to_datetime(d, dayfirst=True))
-                except:
-                    dates_dt.append(None)
-            
-            # FILTRAGE SPÉCIFIQUE ACP (MOIS / UNITÉ)
-            if choix_feuille == "ACP":
-                st.sidebar.markdown("---")
-                st.sidebar.subheader("Filtrage Production")
-                
-                # Unité
-                unit_col = info_cols[1] if len(info_cols) > 1 else info_cols[0]
-                unites = sorted(df[unit_col].dropna().unique().astype(str))
-                unite_sel = st.sidebar.selectbox("Sélectionner l'Unité", unites)
-                
-                # Mois
-                mois_list = sorted(list(set([d.strftime('%m/%Y') for d in dates_dt if d is not None])), 
-                                  key=lambda x: datetime.strptime(x, '%m/%Y'))
-                mois_sel = st.sidebar.selectbox("Mois à analyser", mois_list)
-                
-                # Calcul Somme
-                cols_mois = [dates_cols[i] for i, d in enumerate(dates_dt) if d is not None and d.strftime('%m/%Y') == mois_sel]
-                df_unit = df[df[unit_col].astype(str) == unite_sel]
-                total_prod = pd.to_numeric(df_unit[cols_mois].values.flatten(), errors='coerce').sum()
-                
-                st.markdown(f"""
-                <div class="kpi-total">
-                    <h3 style='margin:0;'>Total Production {unite_sel}</h3>
-                    <h2 style='color:#83B81A; margin:0;'>{total_prod:,.0f} T</h2>
-                    <p style='margin:0;'>Période : {mois_sel}</p>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                st.dataframe(df_unit[info_cols + cols_mois], use_container_width=True)
-            else:
-                # Affichage normal pour ACS et ProductionPlanning
-                st.subheader(f"Détail : {choix_feuille}")
-                st.dataframe(df, use_container_width=True)
+            for d_col in dates_disponibles:
+                df[d_col] = pd.to_numeric(df[d_col], errors='coerce').fillna(0)
 
+            # Filtres classiques
+            selection_dates = st.sidebar.multiselect("📅 Filtrer par Date(s) :", dates_disponibles)
+            for col in cols_infos[:3]:
+                if col in df.columns:
+                    options = sorted(df[col].astype(str).unique())
+                    selection = st.sidebar.multiselect(f"Sélectionner {col} :", options)
+                    if selection: df = df[df[col].astype(str).isin(selection)]
+            
+            dates_to_show = selection_dates if selection_dates else dates_disponibles
+            df_affichage = df[cols_infos + dates_to_show]
+            
+            st.markdown(f"### Détail : {choix_feuille}")
+            st.dataframe(df_affichage, use_container_width=True, height=500)
+
+            # Export
+            output = io.BytesIO()
+            df_affichage.to_excel(output, index=False)
+            st.sidebar.download_button("📥 Télécharger ce tableau", data=output.getvalue(), file_name=f"Data_{choix_feuille}.xlsx")
 else:
-    st.info("👋 Veuillez charger un fichier Excel pour générer les analyses.")
+    st.info("👋 Veuillez charger un fichier Excel pour générer l'Atterrissage Global.")
