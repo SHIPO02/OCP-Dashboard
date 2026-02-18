@@ -12,23 +12,14 @@ st.markdown("""
 [data-testid="stSidebar"] .stText, [data-testid="stSidebar"] label, [data-testid="stSidebar"] h3, [data-testid="stSidebar"] p {
     color: white !important;
 }
-.kpi-card {
-    background-color: #f8f9fa;
-    padding: 20px;
-    border-radius: 10px;
-    border-left: 5px solid #83B81A;
-    text-align: center;
-    box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
-}
-/* Style pour le tableau récapitulatif vert */
 .header-vert {
     background-color: #83B81A;
     color: white;
-    padding: 10px;
-    border-radius: 5px 5px 0 0;
+    padding: 12px;
+    border-radius: 8px 8px 0 0;
     font-weight: bold;
     text-align: center;
-    margin-top: 20px;
+    font-size: 18px;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -77,7 +68,7 @@ def charger_data(file, sheet):
         
         df_data.columns = new_cols
 
-        # Spécifique Production Planning
+        # Traitement spécifique Production Planning
         if sheet == "ProductionPlanning":
             df_data = df_data.iloc[:, 2:]
             if not df_data.empty:
@@ -112,27 +103,36 @@ if source:
         dates_disponibles = [c for c in df.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
         cols_infos = [c for c in df.columns if c not in dates_disponibles]
         
+        # Nettoyage numérique
         for d_col in dates_disponibles:
             df[d_col] = pd.to_numeric(df[d_col], errors='coerce').fillna(0)
 
         if btn_focus:
-            # Création du tableau récapitulatif avec barre verte
-            st.markdown(f'<div class="header-vert">RÉCAPITULATIF ATTERRISSAGE : {choix_feuille}</div>', unsafe_allow_html=True)
+            # --- MODE FOCUS NETTOYÉ ---
+            st.markdown(f'<div class="header-vert">RÉCAPITULATIF : {choix_feuille}</div>', unsafe_allow_html=True)
             
             df_focus = df.iloc[[0]].copy()
-            # On garde seulement les dates avec valeur > 0
-            cols_actives = [c for c in dates_disponibles if df_focus[c].iloc[0] != 0]
-            df_affichage = df_focus[cols_infos + cols_actives]
             
-            # Affichage du tableau focus
-            st.table(df_affichage) # Utilisation de st.table pour un rendu fixe et propre
+            # 1. On ne garde que les dates avec une valeur > 0
+            cols_dates_actives = [c for c in dates_disponibles if df_focus[c].iloc[0] != 0]
+            
+            # 2. On ne garde que les colonnes Info qui ne sont PAS vides (None ou "")
+            cols_info_actives = [c for c in cols_infos if pd.notna(df_focus[c].iloc[0]) and str(df_focus[c].iloc[0]).strip() != ""]
+            
+            # 3. Assemblage final
+            df_final = df_focus[cols_info_actives + cols_dates_actives]
+            
+            if not df_final.empty:
+                st.table(df_final)
+            else:
+                st.warning("Aucune donnée avec valeur trouvée sur la première ligne.")
         else:
-            # Mode normal
+            # --- MODE NORMAL ---
             selection_dates = st.sidebar.multiselect("📅 Filtrer par Date(s) :", dates_disponibles)
             for col in cols_infos[:3]:
                 if col in df.columns:
                     options = sorted(df[col].astype(str).unique())
-                    selection = st.sidebar.multiselect(f"Filtrer {col} :", options)
+                    selection = st.sidebar.multiselect(f"Sélectionner {col} :", options)
                     if selection: df = df[df[col].astype(str).isin(selection)]
             
             dates_to_show = selection_dates if selection_dates else dates_disponibles
@@ -141,7 +141,8 @@ if source:
 
         # Export
         output = io.BytesIO()
-        df_affichage.to_excel(output, index=False)
+        df_final_export = df_final if btn_focus else df_affichage
+        df_final_export.to_excel(output, index=False)
         st.sidebar.download_button("📥 Télécharger ce tableau", data=output.getvalue(), file_name=f"Focus_{choix_feuille}.xlsx")
 else:
     st.info("Veuillez charger un fichier Excel.")
