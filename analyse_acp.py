@@ -3,15 +3,12 @@ import pandas as pd
 import os
 import io
 
-# --- 1. CONFIGURATION ET STYLE OCP ---
+# --- 1. CONFIGURATION ---
 st.set_page_config(page_title="OCP - Dashboard S&OE Expert", layout="wide")
 
 st.markdown("""
     <style>
     [data-testid="stSidebar"] { background-color: #83B81A; }
-    [data-testid="stSidebar"] .stText, [data-testid="stSidebar"] label, [data-testid="stSidebar"] h3, [data-testid="stSidebar"] p {
-        color: white !important;
-    }
     .kpi-card {
         background-color: #f8f9fa;
         padding: 20px;
@@ -26,111 +23,110 @@ st.markdown("""
 # --- 2. EN-TÊTE ---
 col_logo, col_titre = st.columns([1, 4])
 with col_logo:
-    img_path = "logo_ocp.png"
-    if os.path.exists(img_path):
-        st.image(img_path, width=140)
+    if os.path.exists("logo_ocp.png"): st.image("logo_ocp.png", width=140)
 with col_titre:
     st.title("OCP Project")
     st.subheader("Bonjour Monsieur Adil Elbarmaqui")
 
-st.markdown("---")
-
-
-# --- 3. CHARGEMENT DES DONNÉES (VERSION CORRIGÉE) ---
+# --- 3. FONCTION DE CHARGEMENT INTELLIGENTE ---
 @st.cache_data
 def charger_data(file, sheet):
     try:
-        # Lecture brute
-        df = pd.read_excel(file, sheet_name=sheet, header=None, engine='openpyxl')
-        df = df.dropna(how='all', axis=0).dropna(how='all', axis=1).reset_index(drop=True)
-
-        # Détection de la ligne d'en-tête (cherche la ligne avec des dates ou 'Production plan')
-        header_row = 0
-        for i in range(len(df)):
-            row_str = df.iloc[i].astype(str).values
-            if any("01/" in s or "Production plan" in s for s in row_str):
-                header_row = i
+        df_raw = pd.read_excel(file, sheet_name=sheet, header=None, engine='openpyxl')
+        
+        # 1. On cherche la ligne des dates (format date Excel ou texte avec '/')
+        idx_dates = 0
+        for i in range(min(10, len(df_raw))):
+            if df_raw.iloc[i].astype(str).str.contains(r'\d{2}/\d{2}', regex=True).any():
+                idx_dates = i
                 break
         
-        # Définition des colonnes
-        headers = df.iloc[header_row].fillna("Info").tolist()
-        df_data = df.iloc[header_row + 1:].copy()
+        # 2. On récupère les lignes d'en-tête (Dates + Sous-titres)
+        row_dates = df_raw.iloc[idx_dates].fillna("")
+        row_sub = df_raw.iloc[idx_dates + 1].fillna("")
         
-        new_cols = []
-        counts = {}
-        for col in headers:
-            c_str = str(col).strip()
-            if c_str in counts:
-                counts[c_str] += 1
-                new_cols.append(f"{c_str}_{counts[c_str]}")
+        # 3. Création des noms de colonnes propres
+        final_cols = []
+        for d, s in zip(row_dates, row_sub):
+            d_str, s_str = str(d).strip(), str(s).strip()
+            if d_str == "" or "nan" in d_str.lower():
+                name = s_str if s_str != "" else "Info"
             else:
-                counts[c_str] = 0
-                new_cols.append(c_str)
+                # Si c'est une date, on garde la date
+                name = d_str.split(" ")[0] # Garde juste YYYY-MM-DD ou DD/MM
+            final_cols.append(name)
+
+        # Gestion des doublons (Info_1, Info_2...)
+        counts = {}
+        processed_cols = []
+        for c in final_cols:
+            if c in counts:
+                counts[c] += 1
+                processed_cols.append(f"{c}_{counts[c]}")
+            else:
+                counts[c] = 0
+                processed_cols.append(c)
+
+        # 4. Nettoyage des données
+        df = df_raw.iloc[idx_dates + 2:].copy()
+        df.columns = processed_cols
         
-        df_data.columns = new_cols
+        # Remplissage des cellules fusionnées (OIJ Old, etc.)
+        # On remplit les 6 premières colonnes qui sont généralement les colonnes de description
+        df.iloc[:, 0:6] = df.iloc[:, 0:6].ffill()
         
-        # REMPLISSAGE DES CELLULES FUSIONNÉES (Crucial pour l'affichage complet)
-        cols_infos = [c for c in df_data.columns if "Info" in c or "Production" in c or "OIJ" in str(c)]
-        df_data[cols_infos] = df_data[cols_infos].ffill()
+        # Supprimer les lignes totalement vides
+        df = df.dropna(how='all', axis=0)
         
-        return df_data.reset_index(drop=True)
+        return df.reset_index(drop=True)
     except Exception as e:
-        st.error(f"Erreur de lecture : {e}")
+        st.error(f"Erreur : {e}")
         return pd.DataFrame()
 
-
-# --- 4. BARRE LATÉRALE ---
-st.sidebar.title("🚀 Pilotage S&OE")
+# --- 4. LOGIQUE PRINCIPALE ---
 uploaded_file = st.sidebar.file_uploader("Mettre à jour Excel", type=["xlsm", "xlsx"])
-
-dossier = os.path.dirname(os.path.abspath(__file__))
-local_file = os.path.join(dossier, "Inventory Projection.xlsm")
+local_file = "Inventory Projection.xlsm"
 source = uploaded_file if uploaded_file else (local_file if os.path.exists(local_file) else None)
 
-choix_feuille = st.sidebar.radio("Sélectionner la feuille :", ["ACP", "ACS", "ProductionPlanning"])
+choix_feuille = st.sidebar.radio("Sélectionner la feuille :", ["ProductionPlanning", "ACP", "ACS"])
 
-# --- 5. LOGIQUE PRINCIPALE ---
 if source:
     df = charger_data(source, choix_feuille)
+    
     if not df.empty:
-        # Séparation Infos vs Dates
-        cols_infos = [c for c in df.columns if any(x in str(c) for x in ["Info", "Production", "Total", "Product", "Volume"])]
-        dates_disponibles = [c for c in df.columns if c not in cols_infos]
-        
-        # Nettoyage numérique des dates
-        for d in dates_disponibles:
-            df[d] = pd.to_numeric(df[d], errors='coerce').fillna(0)
+        # Séparer les colonnes Info (description) et les colonnes Dates (données numériques)
+        cols_info = [c for c in df.columns if any(x in c for x in ["Info", "Product", "Volume", "Unit", "Line"])]
+        cols_dates = [c for c in df.columns if c not in cols_info]
 
-        # Filtres dynamiques
+        # --- FILTRES ---
         st.sidebar.markdown("---")
-        for col in cols_infos[:3]:
-            options = sorted(df[col].astype(str).unique())
-            sel = st.sidebar.multiselect(f"Filtrer {col}", options)
-            if sel: df = df[df[col].astype(str).isin(sel)]
-
-        selection_dates = st.sidebar.multiselect("📅 Sélection Dates :", dates_disponibles)
-        dates_a_afficher = selection_dates if selection_dates else dates_disponibles
+        st.sidebar.subheader("Filtres")
         
-        df_affichage = df[cols_infos + dates_a_afficher]
+        df_filtered = df.copy()
+        # On crée des filtres pour les 3 premières colonnes d'info
+        for col in cols_info[:3]:
+            options = sorted(df[col].unique().astype(str))
+            selection = st.sidebar.multiselect(f"Filtrer par {col}", options)
+            if selection:
+                df_filtered = df_filtered[df_filtered[col].astype(str).isin(selection)]
 
-        # KPIs
-        val_tot = df[dates_a_afficher].sum().sum()
-        k1, k2 = st.columns(2)
-        k1.metric("Total Mesuré", f"{val_tot:,.0f} T")
-        k2.metric("Lignes affichées", len(df))
-
-        tab_vue, tab_graph = st.tabs(["📄 Vue Détaillée", "📊 Analyses"])
-        with tab_vue:
-            st.dataframe(df_affichage, use_container_width=True, height=600)
+        # --- AFFICHAGE ---
+        st.subheader(f"Tableau : {choix_feuille}")
         
-        with tab_graph:
-            st.info("Sélectionnez des données pour générer les graphiques.")
-            if len(dates_a_afficher) > 0:
-                st.line_chart(df[dates_a_afficher].T.sum(axis=1))
+        # Metrics simples
+        c1, c2 = st.columns(2)
+        with c1:
+            total = pd.to_numeric(df_filtered[cols_dates].stack(), errors='coerce').sum()
+            st.metric("Volume Total (Sélection)", f"{total:,.0f} T")
+        with c2:
+            st.metric("Lignes affichées", len(df_filtered))
+
+        # Le tableau complet
+        st.dataframe(df_filtered, use_container_width=True, height=600)
 
         # Export
         output = io.BytesIO()
-        df_affichage.to_excel(output, index=False)
-        st.sidebar.download_button("📥 Télécharger Rapport", data=output.getvalue(), file_name="Rapport_OCP.xlsx")
+        df_filtered.to_excel(output, index=False)
+        st.sidebar.download_button("📥 Télécharger ce tableau", data=output.getvalue(), file_name="export_ocp.xlsx")
 else:
-    st.info("Veuillez charger un fichier Excel.")
+    st.info("Veuillez charger le fichier 'Inventory Projection.xlsm' pour voir les données.")
