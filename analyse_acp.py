@@ -30,6 +30,7 @@ st.markdown("""
     border-left: 5px solid #83B81A;
     margin-bottom: 20px;
 }
+.spacer { margin-bottom: 40px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -45,13 +46,14 @@ with col_titre:
 
 st.markdown("---")
 
-# --- 3. FONCTIONS DE CHARGEMENT ---
+# --- 3. FONCTIONS DE CHARGEMENT ET FILTRAGE ---
 @st.cache_data
 def charger_data(file, sheet):
     try:
         df = pd.read_excel(file, sheet_name=sheet, header=None, engine='openpyxl')
         df = df.dropna(how='all', axis=0).dropna(how='all', axis=1).reset_index(drop=True)
         
+        # Détection de la ligne d'en-tête (Dates JJ/MM)
         idx_dates = 0
         for i in range(min(15, len(df))):
             if df.iloc[i].astype(str).str.contains(r'\d{2}/\d{2}', regex=True).any():
@@ -86,6 +88,10 @@ def charger_data(file, sheet):
     except Exception as e:
         return pd.DataFrame()
 
+def est_valide(val):
+    s_val = str(val).strip().lower()
+    return val != 0 and pd.notna(val) and s_val not in ["", "none", "nan", "info"]
+
 # --- 4. BARRE LATÉRALE ---
 st.sidebar.title("🚀 Pilotage S&OE")
 uploaded_file = st.sidebar.file_uploader("Mettre à jour Excel", type=["xlsm", "xlsx"])
@@ -100,22 +106,37 @@ btn_global = st.sidebar.toggle("🎯 Atterrissage Global")
 # --- 5. LOGIQUE PRINCIPALE ---
 if source:
     if btn_global:
-        # Code Atterrissage Global (identique au précédent)
+        # --- VUE : ATTERRISSAGE GLOBAL (CONSOLIDÉ) ---
+        st.subheader("📊 Atterrissage Global")
         for feuille in ["ACP", "ACS", "ProductionPlanning"]:
             df_f = charger_data(source, feuille)
             if not df_f.empty:
+                # Nettoyage pour calcul
+                dates_d = [c for c in df_f.columns if any(char.isdigit() for char in str(c))]
+                for d in dates_d:
+                    df_f[d] = pd.to_numeric(df_f[d], errors='coerce').fillna(0)
+                
+                df_focus = df_f.iloc[[0]].copy()
+                cols_utiles = [c for c in df_focus.columns if est_valide(df_focus[c].iloc[0])]
+                df_final = df_focus[cols_utiles]
+                
                 st.markdown(f'<div class="header-vert">ATTERRISSAGE : {feuille}</div>', unsafe_allow_html=True)
-                st.table(df_f.iloc[[0]])
+                if not df_final.empty:
+                    st.table(df_final)
+                else:
+                    st.warning(f"Aucune donnée active pour {feuille}")
+                st.markdown('<div class="spacer"></div>', unsafe_allow_html=True)
+    
     else:
+        # --- VUE : ANALYSE PAR FEUILLE AVEC FILTRES ---
         choix_feuille = st.sidebar.radio("Sélectionner la feuille :", ["ACP", "ACS", "ProductionPlanning"])
         df = charger_data(source, choix_feuille)
         
         if not df.empty:
-            # 1. Identifier les colonnes de dates
             dates_cols = [c for c in df.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
             info_cols = [c for c in df.columns if c not in dates_cols]
             
-            # 2. Convertir les dates pour filtrage par mois
+            # Conversion pour filtrage temporel
             dates_dt = []
             for d in dates_cols:
                 try:
@@ -123,26 +144,26 @@ if source:
                 except:
                     dates_dt.append(None)
             
-            # 3. Filtres Sidebar pour ACP
+            # FILTRAGE SPÉCIFIQUE ACP (MOIS / UNITÉ)
             if choix_feuille == "ACP":
                 st.sidebar.markdown("---")
-                st.sidebar.subheader("Filtrage Production ACP")
+                st.sidebar.subheader("Filtrage Production")
                 
-                # Filtre par Unité
+                # Unité
                 unit_col = info_cols[1] if len(info_cols) > 1 else info_cols[0]
                 unites = sorted(df[unit_col].dropna().unique().astype(str))
-                unite_sel = st.sidebar.selectbox("Unités", unites)
+                unite_sel = st.sidebar.selectbox("Sélectionner l'Unité", unites)
                 
-                # Filtre par Mois
-                mois_dispo = sorted(list(set([d.strftime('%m/%Y') for d in dates_dt if d is not None])), key=lambda x: datetime.strptime(x, '%m/%Y'))
-                mois_sel = st.sidebar.selectbox("Sélectionner le Mois", mois_dispo)
+                # Mois
+                mois_list = sorted(list(set([d.strftime('%m/%Y') for d in dates_dt if d is not None])), 
+                                  key=lambda x: datetime.strptime(x, '%m/%Y'))
+                mois_sel = st.sidebar.selectbox("Mois à analyser", mois_list)
                 
-                # Calcul de la somme
+                # Calcul Somme
                 cols_mois = [dates_cols[i] for i, d in enumerate(dates_dt) if d is not None and d.strftime('%m/%Y') == mois_sel]
                 df_unit = df[df[unit_col].astype(str) == unite_sel]
                 total_prod = pd.to_numeric(df_unit[cols_mois].values.flatten(), errors='coerce').sum()
                 
-                # Affichage du résultat KPI
                 st.markdown(f"""
                 <div class="kpi-total">
                     <h3 style='margin:0;'>Total Production {unite_sel}</h3>
@@ -153,6 +174,9 @@ if source:
                 
                 st.dataframe(df_unit[info_cols + cols_mois], use_container_width=True)
             else:
+                # Affichage normal pour ACS et ProductionPlanning
+                st.subheader(f"Détail : {choix_feuille}")
                 st.dataframe(df, use_container_width=True)
+
 else:
-    st.info("Veuillez charger un fichier Excel.")
+    st.info("👋 Veuillez charger un fichier Excel pour générer les analyses.")
