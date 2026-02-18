@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import os
 import io
+from datetime import datetime
 
 # --- 1. CONFIGURATION ET STYLE OCP ---
 st.set_page_config(page_title="OCP - Dashboard S&OE Expert", layout="wide")
@@ -21,6 +22,14 @@ st.markdown("""
     text-align: center;
     font-size: 18px;
     margin-top: 10px;
+}
+.kpi-card {
+    background-color: #f0f2f6;
+    padding: 20px;
+    border-radius: 10px;
+    border-left: 8px solid #83B81A;
+    box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
+    text-align: center;
 }
 .spacer { margin-bottom: 40px; }
 </style>
@@ -45,7 +54,6 @@ def charger_data(file, sheet):
         df = pd.read_excel(file, sheet_name=sheet, header=None, engine='openpyxl')
         df = df.dropna(how='all', axis=0).dropna(how='all', axis=1).reset_index(drop=True)
         
-        # Détection de la ligne d'en-tête (Dates)
         idx_dates = 1 if sheet != "ProductionPlanning" else 0
         if sheet == "ProductionPlanning":
             for i in range(min(15, len(df))):
@@ -70,14 +78,14 @@ def charger_data(file, sheet):
         
         df_data.columns = new_cols
 
-        # Spécifique Production Planning (Suppression colonnes A et B)
         if sheet == "ProductionPlanning":
             df_data = df_data.iloc[:, 2:]
             if not df_data.empty:
-                col_target = [c for c in df_data.columns if "Info" in c][1] if len([c for c in df_data.columns if "Info" in c]) > 1 else df_data.columns[0]
-                df_data[col_target] = df_data[col_target].astype(object)
-                df_data.loc[1:, col_target] = None 
-                df_data.loc[0, col_target] = "atterissage ACP 29"
+                cols_inf = [c for c in df_data.columns if "Info" in c]
+                target = cols_inf[1] if len(cols_inf) > 1 else df_data.columns[0]
+                df_data[target] = df_data[target].astype(object)
+                df_data.loc[1:, target] = None 
+                df_data.loc[0, target] = "atterissage ACP 29"
         
         return df_data.reset_index(drop=True)
     except Exception as e:
@@ -101,65 +109,80 @@ btn_focus = st.sidebar.toggle("🎯 Atterrissage Global")
 if not btn_focus:
     choix_feuille = st.sidebar.radio("Sélectionner la feuille :", ["ACP", "ACS", "ProductionPlanning"])
 else:
-    st.sidebar.info("Vue consolidée de toutes les feuilles activée.")
+    st.sidebar.info("Vue consolidée activée.")
 
 # --- 5. LOGIQUE PRINCIPALE ---
 if source:
     if btn_focus:
         # --- VUE : ATTERRISSAGE GLOBAL ---
         st.subheader("📊 Atterrissage Global")
-        
         for feuille in ["ACP", "ACS", "ProductionPlanning"]:
             df_feuille = charger_data(source, feuille)
             if not df_feuille.empty:
-                # Identification et nettoyage numérique des dates
-                dates_dispo = [c for c in df_feuille.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
+                dates_dispo = [c for c in df_feuille.columns if any(char.isdigit() for char in str(c))]
                 for d in dates_dispo:
                     df_feuille[d] = pd.to_numeric(df_feuille[d], errors='coerce').fillna(0)
-                
-                # Extraction de la ligne 1 (index 0)
                 df_focus = df_feuille.iloc[[0]].copy()
-                
-                # Filtrage strict des colonnes vides ou à 0
                 cols_utiles = [c for c in df_focus.columns if est_valide(df_focus[c].iloc[0])]
-                df_final = df_focus[cols_utiles]
-                
-                # Affichage
                 st.markdown(f'<div class="header-vert">ATTERRISSAGE : {feuille}</div>', unsafe_allow_html=True)
-                if not df_final.empty:
-                    st.table(df_final)
-                else:
-                    st.warning(f"Aucune donnée active détectée pour la feuille {feuille}")
+                st.table(df_focus[cols_utiles])
                 st.markdown('<div class="spacer"></div>', unsafe_allow_html=True)
     
     else:
-        # --- VUE : NORMALE (PAR FEUILLE) ---
+        # --- VUE : NORMALE (AVEC FILTRAGE INTELLIGENT POUR ACP) ---
         df_brut = charger_data(source, choix_feuille)
         if not df_brut.empty:
             df = df_brut.copy()
-            dates_disponibles = [c for c in df.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
-            cols_infos = [c for c in df.columns if c not in dates_disponibles]
+            dates_cols = [c for c in df.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
+            info_cols = [c for c in df.columns if c not in dates_cols]
             
-            for d_col in dates_disponibles:
+            for d_col in dates_cols:
                 df[d_col] = pd.to_numeric(df[d_col], errors='coerce').fillna(0)
 
-            # Filtres classiques
-            selection_dates = st.sidebar.multiselect("📅 Filtrer par Date(s) :", dates_disponibles)
-            for col in cols_infos[:3]:
-                if col in df.columns:
-                    options = sorted(df[col].astype(str).unique())
-                    selection = st.sidebar.multiselect(f"Sélectionner {col} :", options)
-                    if selection: df = df[df[col].astype(str).isin(selection)]
+            # --- LOGIQUE SPÉCIFIQUE ACP : CARTES FILTRAGE ---
+            if choix_feuille == "ACP":
+                st.sidebar.markdown("---")
+                st.sidebar.subheader("Filtres Intelligents ACP")
+                
+                # 1. Sélection Unité
+                unit_col = info_cols[1] if len(info_cols) > 1 else info_cols[0]
+                unites = sorted(df[unit_col].dropna().unique().astype(str))
+                u_sel = st.sidebar.selectbox("Unité", unites)
+                
+                # 2. Sélection Mois
+                dates_dt = pd.to_datetime(dates_cols, dayfirst=True, errors='coerce')
+                mois_dispo = sorted(list(set([d.strftime('%m/%Y') for d in dates_dt if pd.notnull(d)])), 
+                                    key=lambda x: datetime.strptime(x, '%m/%Y'))
+                m_sel = st.sidebar.selectbox("Mois", mois_dispo)
+                
+                # 3. Calcul Dynamique
+                cols_mois = [dates_cols[i] for i, d in enumerate(dates_dt) if pd.notnull(d) and d.strftime('%m/%Y') == m_sel]
+                df_filtre = df[df[unit_col].astype(str) == u_sel]
+                total_mois = df_filtre[cols_mois].values.sum()
+
+                # 4. Affichage sous forme de Carte KPI
+                c1, c2, c3 = st.columns([1, 2, 1])
+                with c2:
+                    st.markdown(f"""
+                    <div class="kpi-card">
+                        <p style="color: #555; font-size: 16px; margin: 0;">Somme Production Mensuelle</p>
+                        <h1 style="color: #83B81A; margin: 10px 0;">{total_mois:,.0f} T</h1>
+                        <p style="font-weight: bold; margin: 0;">{u_sel} — {m_sel}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                # Affichage du tableau restreint au mois
+                st.dataframe(df_filtre[info_cols + cols_mois], use_container_width=True)
             
-            dates_to_show = selection_dates if selection_dates else dates_disponibles
-            df_affichage = df[cols_infos + dates_to_show]
-            
-            st.markdown(f"### Détail : {choix_feuille}")
-            st.dataframe(df_affichage, use_container_width=True, height=500)
+            else:
+                # --- AFFICHAGE CLASSIQUE ACS / PRODUCTION PLANNING ---
+                st.markdown(f"### Détail : {choix_feuille}")
+                st.dataframe(df, use_container_width=True, height=500)
 
             # Export
             output = io.BytesIO()
-            df_affichage.to_excel(output, index=False)
-            st.sidebar.download_button("📥 Télécharger ce tableau", data=output.getvalue(), file_name=f"Data_{choix_feuille}.xlsx")
+            df.to_excel(output, index=False)
+            st.sidebar.download_button("📥 Télécharger Excel", data=output.getvalue(), file_name=f"{choix_feuille}.xlsx")
 else:
-    st.info("👋 Veuillez charger un fichier Excel pour générer l'Atterrissage Global.")
+    st.info("👋 Veuillez charger un fichier Excel.")
