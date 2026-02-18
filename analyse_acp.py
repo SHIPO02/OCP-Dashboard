@@ -41,9 +41,10 @@ st.markdown("---")
 def charger_data(file, sheet):
     try:
         df = pd.read_excel(file, sheet_name=sheet, header=None, engine='openpyxl')
+        # Nettoyage initial des lignes et colonnes totalement vides
         df = df.dropna(how='all', axis=0).dropna(how='all', axis=1).reset_index(drop=True)
         
-        # Détection dynamique de la ligne d'en-tête (Dates)
+        # Détection de la ligne d'en-tête (cherche une date JJ/MM)
         idx_dates = 0
         for i in range(min(15, len(df))):
             if df.iloc[i].astype(str).str.contains(r'\d{2}/\d{2}', regex=True).any():
@@ -67,16 +68,16 @@ def charger_data(file, sheet):
         
         df_data.columns = new_cols
 
-        # Traitement spécifique Production Planning (Suppression A et B)
+        # Logique spécifique Production Planning (Suppression A et B)
         if sheet == "ProductionPlanning":
             df_data = df_data.iloc[:, 2:]
             if not df_data.empty:
-                # Injection du titre sur la ligne 0
+                # Injection manuelle de "atterissage ACP 29"
                 cols_inf = [c for c in df_data.columns if "Info" in c]
-                target = cols_inf[1] if len(cols_inf) > 1 else df_data.columns[0]
-                df_data[target] = df_data[target].astype(object)
-                df_data.loc[1:, target] = None 
-                df_data.loc[0, target] = "atterissage ACP 29"
+                target_col = cols_inf[1] if len(cols_inf) > 1 else df_data.columns[0]
+                df_data[target_col] = df_data[target_col].astype(object)
+                df_data.loc[1:, target_col] = None 
+                df_data.loc[0, target_col] = "atterissage ACP 29"
         
         return df_data.reset_index(drop=True)
     except Exception as e:
@@ -101,40 +102,51 @@ if source:
     if not df_brut.empty:
         df = df_brut.copy()
         
-        # Identification des colonnes de dates
+        # Identification des dates
         dates_disponibles = [c for c in df.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
+        cols_infos = [c for c in df.columns if c not in dates_disponibles]
         
-        # Nettoyage numérique des dates
+        # Nettoyage numérique
         for d_col in dates_disponibles:
             df[d_col] = pd.to_numeric(df[d_col], errors='coerce').fillna(0)
 
         if btn_focus:
-            # --- NETTOYAGE RADICAL DE TOUTES LES COLONNES VIDES ---
+            # --- NETTOYAGE STRICT : AUCUNE COLONNE VIDE ---
             df_focus = df.iloc[[0]].copy()
             
-            # Fonction pour vérifier si une cellule est "utile"
-            def est_utile(val):
-                s = str(val).strip().lower()
-                return val != 0 and pd.notna(val) and s not in ["", "none", "nan", "info"]
+            def est_valide(val):
+                s_val = str(val).strip().lower()
+                # On élimine : zéros, None, vide, nan, et les noms génériques "info"
+                return val != 0 and pd.notna(val) and s_val not in ["", "none", "nan", "info"]
 
-            # On ne garde que les colonnes qui ont une valeur utile sur la ligne 1
-            cols_utiles = [c for c in df_focus.columns if est_utile(df_focus[c].iloc[0])]
-            df_final = df_focus[cols_utiles]
+            # On filtre toutes les colonnes pour ne garder que celles ayant une valeur réelle
+            cols_a_garder = [c for c in df_focus.columns if est_valide(df_focus[c].iloc[0])]
+            df_final = df_focus[cols_a_garder]
             
             st.markdown(f'<div class="header-vert">RÉCAPITULATIF ATTERRISSAGE : {choix_feuille}</div>', unsafe_allow_html=True)
             
             if not df_final.empty:
                 st.table(df_final)
             else:
-                st.warning("Aucune donnée valide sur la ligne 1 pour cette feuille.")
+                st.warning("Aucune donnée avec valeur trouvée sur cette ligne.")
         else:
             # Mode normal
-            st.dataframe(df, use_container_width=True, height=500)
+            selection_dates = st.sidebar.multiselect("📅 Filtrer par Date(s) :", dates_disponibles)
+            for col in cols_infos[:3]:
+                if col in df.columns:
+                    options = sorted(df[col].astype(str).unique())
+                    selection = st.sidebar.multiselect(f"Sélectionner {col} :", options)
+                    if selection: df = df[df[col].astype(str).isin(selection)]
+            
+            dates_to_show = selection_dates if selection_dates else dates_disponibles
+            df_affichage = df[cols_infos + dates_to_show]
+            st.dataframe(df_affichage, use_container_width=True, height=500)
 
         # Export
         output = io.BytesIO()
-        df_export = df_final if btn_focus else df
+        df_export = df_final if btn_focus else df_affichage
         df_export.to_excel(output, index=False)
         st.sidebar.download_button("📥 Télécharger ce tableau", data=output.getvalue(), file_name=f"Focus_{choix_feuille}.xlsx")
 else:
-    st.info("👋 Veuillez charger un fichier Excel.")
+    st.info("👋 Veuillez charger un fichier Excel pour commencer.")
+
