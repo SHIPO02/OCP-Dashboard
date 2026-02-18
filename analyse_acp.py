@@ -42,11 +42,10 @@ def charger_data(file, sheet):
         df = pd.read_excel(file, sheet_name=sheet, header=None, engine='openpyxl')
         df = df.dropna(how='all', axis=0).dropna(how='all', axis=1).reset_index(drop=True)
         
-        # --- LOGIQUE PRODUCTION PLANNING ---
+        # --- LOGIQUE SPÉCIFIQUE PRODUCTION PLANNING ---
         if sheet == "ProductionPlanning":
-            # Recherche de la ligne des dates
             idx_dates = 0
-            for i in range(min(15, len(df))):
+            for i in range(len(df)):
                 if df.iloc[i].astype(str).str.contains(r'\d{2}/\d{2}', regex=True).any():
                     idx_dates = i
                     break
@@ -68,25 +67,22 @@ def charger_data(file, sheet):
             
             df_data.columns = new_cols
             
-            # 1. Supprimer les colonnes A et B
+            # On supprime les colonnes A et B (indices 0 et 1)
             df_data = df_data.iloc[:, 2:]
             
-            # 2. Remplissage (ffill) AVANT d'ajouter le titre personnalisé
-            for c in df_data.columns[:8]:
-                df_data[c] = df_data[c].ffill()
-            
-            # 3. Injecter "atterissage ACP 29" UNIQUEMENT sur la ligne 0
-            # On le place dans la colonne Info_3 (qui n'est plus ffillée après cette étape)
+            # Injection de "atterissage ACP 29" à la ligne 0
             if not df_data.empty:
-                col_target = "Info_3" if "Info_3" in df_data.columns else df_data.columns[1]
-                # On s'assure que le reste de la colonne est vide pour cette valeur
-                df_data[col_target] = df_data[col_target].astype(object)
-                df_data.loc[1:, col_target] = None 
-                df_data.loc[0, col_target] = "atterissage ACP 29"
+                cols_inf = [c for c in df_data.columns if "Info" in c]
+                if len(cols_inf) > 1:
+                    df_data.iloc[0, df_data.columns.get_loc(cols_inf[1])] = "atterissage ACP 29"
+            
+            # --- FONCTION ffill() DÉSACTIVÉE ICI ---
+            # for c in df_data.columns[:8]:
+            #     df_data[c] = df_data[c].ffill()
             
             return df_data.reset_index(drop=True)
 
-        # --- LOGIQUE ORIGINALE POUR ACP / ACS ---
+        # --- LOGIQUE ORIGINALE (ACP / ACS) ---
         else:
             headers = df.iloc[1].fillna("Info").tolist()
             df_data = df.iloc[2:].copy()
@@ -101,8 +97,11 @@ def charger_data(file, sheet):
                     counts[c_str] = 0
                     new_cols.append(c_str)
             df_data.columns = new_cols
-            for c in df_data.columns[:6]: 
-                df_data[c] = df_data[c].ffill()
+
+            # --- FONCTION ffill() DÉSACTIVÉE ICI ---
+            # for c in df_data.columns[:6]: 
+            #     df_data[c] = df_data[c].ffill()
+
             return df_data
 
     except Exception as e:
@@ -132,11 +131,11 @@ if source:
         for d_col in dates_disponibles:
             df[d_col] = pd.to_numeric(df[d_col], errors='coerce').fillna(0)
 
-        # --- FILTRES ---
+        # --- FILTRES SIDEBAR ---
         st.sidebar.markdown("---")
         selection_dates = st.sidebar.multiselect("📅 Filtrer par Date(s) :", dates_disponibles)
 
-        for col in cols_infos[:4]:
+        for col in cols_infos[:3]:
             if col in df.columns:
                 options = sorted(df[col].astype(str).unique())
                 selection = st.sidebar.multiselect(f"Sélectionner {col} :", options)
