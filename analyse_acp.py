@@ -20,6 +20,16 @@ st.markdown("""
     text-align: center;
     box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
 }
+/* Style pour le tableau récapitulatif vert */
+.header-vert {
+    background-color: #83B81A;
+    color: white;
+    padding: 10px;
+    border-radius: 5px 5px 0 0;
+    font-weight: bold;
+    text-align: center;
+    margin-top: 20px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -42,7 +52,7 @@ def charger_data(file, sheet):
         df = pd.read_excel(file, sheet_name=sheet, header=None, engine='openpyxl')
         df = df.dropna(how='all', axis=0).dropna(how='all', axis=1).reset_index(drop=True)
         
-        # Logique pour trouver les dates (commune ou spécifique)
+        # Détection de la ligne d'en-tête (Dates)
         idx_dates = 1 if sheet != "ProductionPlanning" else 0
         if sheet == "ProductionPlanning":
             for i in range(min(15, len(df))):
@@ -67,7 +77,7 @@ def charger_data(file, sheet):
         
         df_data.columns = new_cols
 
-        # Spécifique Production Planning (Colonnes A, B et Titre)
+        # Spécifique Production Planning
         if sheet == "ProductionPlanning":
             df_data = df_data.iloc[:, 2:]
             if not df_data.empty:
@@ -91,7 +101,6 @@ source = uploaded_file if uploaded_file else (local_file if os.path.exists(local
 choix_feuille = st.sidebar.radio("Sélectionner la feuille :", ["ACP", "ACS", "ProductionPlanning"])
 
 st.sidebar.markdown("---")
-# Le bouton fonctionne maintenant pour TOUTES les feuilles
 btn_focus = st.sidebar.toggle("🎯 Focus Atterrissage (Ligne 1)")
 
 # --- 5. LOGIQUE PRINCIPALE ---
@@ -100,24 +109,25 @@ if source:
     if not df_brut.empty:
         df = df_brut.copy()
         
-        # Identification des dates
         dates_disponibles = [c for c in df.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
         cols_infos = [c for c in df.columns if c not in dates_disponibles]
         
-        # Conversion numérique pour pouvoir filtrer les zéros
         for d_col in dates_disponibles:
             df[d_col] = pd.to_numeric(df[d_col], errors='coerce').fillna(0)
 
-        # APPLICATION DU FILTRE FOCUS (ACP, ACS, ou ProductionPlanning)
         if btn_focus:
-            # On prend la première ligne de données
-            df_affichage = df.iloc[[0]].copy()
-            # On garde seulement les dates qui ont une valeur différente de 0 sur cette ligne
-            cols_avec_valeurs = [c for c in dates_disponibles if df_affichage[c].iloc[0] != 0]
-            df_affichage = df_affichage[cols_infos + cols_avec_valeurs]
-            st.success(f"Affichage Focus : Uniquement les dates avec valeurs pour {choix_feuille}")
+            # Création du tableau récapitulatif avec barre verte
+            st.markdown(f'<div class="header-vert">RÉCAPITULATIF ATTERRISSAGE : {choix_feuille}</div>', unsafe_allow_html=True)
+            
+            df_focus = df.iloc[[0]].copy()
+            # On garde seulement les dates avec valeur > 0
+            cols_actives = [c for c in dates_disponibles if df_focus[c].iloc[0] != 0]
+            df_affichage = df_focus[cols_infos + cols_actives]
+            
+            # Affichage du tableau focus
+            st.table(df_affichage) # Utilisation de st.table pour un rendu fixe et propre
         else:
-            # Mode normal avec filtres classiques
+            # Mode normal
             selection_dates = st.sidebar.multiselect("📅 Filtrer par Date(s) :", dates_disponibles)
             for col in cols_infos[:3]:
                 if col in df.columns:
@@ -127,9 +137,7 @@ if source:
             
             dates_to_show = selection_dates if selection_dates else dates_disponibles
             df_affichage = df[cols_infos + dates_to_show]
-
-        # --- AFFICHAGE ---
-        st.dataframe(df_affichage, use_container_width=True, height=500)
+            st.dataframe(df_affichage, use_container_width=True, height=500)
 
         # Export
         output = io.BytesIO()
