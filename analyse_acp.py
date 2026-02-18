@@ -20,7 +20,9 @@ st.markdown("""
     font-weight: bold;
     text-align: center;
     font-size: 18px;
+    margin-bottom: 0px;
 }
+.spacer { margin-bottom: 30px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -44,12 +46,11 @@ def charger_data(file, sheet):
         df = df.dropna(how='all', axis=0).dropna(how='all', axis=1).reset_index(drop=True)
         
         # Détection de la ligne d'en-tête (Dates)
-        idx_dates = 1 if sheet != "ProductionPlanning" else 0
-        if sheet == "ProductionPlanning":
-            for i in range(min(15, len(df))):
-                if df.iloc[i].astype(str).str.contains(r'\d{2}/\d{2}', regex=True).any():
-                    idx_dates = i
-                    break
+        idx_dates = 0
+        for i in range(min(15, len(df))):
+            if df.iloc[i].astype(str).str.contains(r'\d{2}/\d{2}', regex=True).any():
+                idx_dates = i
+                break
         
         headers = df.iloc[idx_dates].fillna("Info").tolist()
         df_data = df.iloc[idx_dates + 1:].copy()
@@ -72,10 +73,11 @@ def charger_data(file, sheet):
         if sheet == "ProductionPlanning":
             df_data = df_data.iloc[:, 2:]
             if not df_data.empty:
-                col_target = [c for c in df_data.columns if "Info" in c][1] if len([c for c in df_data.columns if "Info" in c]) > 1 else df_data.columns[0]
-                df_data[col_target] = df_data[col_target].astype(object)
-                df_data.loc[1:, col_target] = None 
-                df_data.loc[0, col_target] = "atterissage ACP 29"
+                cols_inf = [c for c in df_data.columns if "Info" in c]
+                target_col = cols_inf[1] if len(cols_inf) > 1 else df_data.columns[0]
+                df_data[target_col] = df_data[target_col].astype(object)
+                df_data.loc[1:, target_col] = None 
+                df_data.loc[0, target_col] = "atterissage ACP 29"
         
         return df_data.reset_index(drop=True)
     except Exception as e:
@@ -89,47 +91,51 @@ dossier = os.path.dirname(os.path.abspath(__file__))
 local_file = os.path.join(dossier, "Inventory Projection.xlsm")
 source = uploaded_file if uploaded_file else (local_file if os.path.exists(local_file) else None)
 
-choix_feuille = st.sidebar.radio("Sélectionner la feuille :", ["ACP", "ACS", "ProductionPlanning"])
-
 st.sidebar.markdown("---")
-btn_focus = st.sidebar.toggle("🎯 Focus Atterrissage (Ligne 1)")
+btn_focus = st.sidebar.toggle("🎯 Focus Atterrissage Global (Ligne 1)")
+
+if not btn_focus:
+    choix_feuille = st.sidebar.radio("Sélectionner la feuille :", ["ACP", "ACS", "ProductionPlanning"])
+else:
+    st.sidebar.info("Mode Global Activé : Affichage de ACP, ACS et ProductionPlanning")
 
 # --- 5. LOGIQUE PRINCIPALE ---
+def est_valide(val):
+    s_val = str(val).strip().lower()
+    return val != 0 and pd.notna(val) and s_val not in ["", "none", "nan", "info"]
+
 if source:
-    df_brut = charger_data(source, choix_feuille)
-    if not df_brut.empty:
-        df = df_brut.copy()
-        
-        # Identification des colonnes de dates
-        dates_disponibles = [c for c in df.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
-        cols_infos = [c for c in df.columns if c not in dates_disponibles]
-        
-        # Nettoyage numérique des colonnes de dates
-        for d_col in dates_disponibles:
-            df[d_col] = pd.to_numeric(df[d_col], errors='coerce').fillna(0)
+    if btn_focus:
+        # --- MODE FOCUS GLOBAL (TOUTES LES FEUILLES) ---
+        for feuille in ["ACP", "ACS", "ProductionPlanning"]:
+            df_brut = charger_data(source, feuille)
+            if not df_brut.empty:
+                # Nettoyage des colonnes de dates pour calcul
+                dates_dispo = [c for c in df_brut.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
+                for d in dates_dispo:
+                    df_brut[d] = pd.to_numeric(df_brut[d], errors='coerce').fillna(0)
+                
+                df_focus = df_brut.iloc[[0]].copy()
+                cols_a_garder = [c for c in df_focus.columns if est_valide(df_focus[c].iloc[0])]
+                df_final = df_focus[cols_a_garder]
+                
+                st.markdown(f'<div class="header-vert">ATTERRISSAGE : {feuille}</div>', unsafe_allow_html=True)
+                if not df_final.empty:
+                    st.table(df_final)
+                else:
+                    st.warning(f"Aucune donnée valide trouvée pour la feuille {feuille}")
+                st.markdown('<div class="spacer"></div>', unsafe_allow_html=True)
+    else:
+        # --- MODE NORMAL (FEUILLE PAR FEUILLE) ---
+        df_brut = charger_data(source, choix_feuille)
+        if not df_brut.empty:
+            df = df_brut.copy()
+            dates_disponibles = [c for c in df.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
+            cols_infos = [c for c in df.columns if c not in dates_disponibles]
+            
+            for d_col in dates_disponibles:
+                df[d_col] = pd.to_numeric(df[d_col], errors='coerce').fillna(0)
 
-        if btn_focus:
-            # --- NETTOYAGE STRICT DES COLONNES VIDES ---
-            df_focus = df.iloc[[0]].copy()
-            
-            # On ne garde que les colonnes où la valeur n'est ni 0, ni None, ni vide
-            def est_valide(val):
-                s_val = str(val).strip().lower()
-                return val != 0 and pd.notna(val) and s_val != "" and s_val != "none" and s_val != "nan"
-
-            cols_a_garder = [c for c in df_focus.columns if est_valide(df_focus[c].iloc[0])]
-            
-            df_final = df_focus[cols_a_garder]
-            
-            st.markdown(f'<div class="header-vert">RÉCAPITULATIF ATTERRISSAGE : {choix_feuille}</div>', unsafe_allow_html=True)
-            
-            if not df_final.empty:
-                # Affichage propre sans colonnes inutiles
-                st.table(df_final)
-            else:
-                st.warning("Aucune donnée avec valeur trouvée pour cette ligne.")
-        else:
-            # Mode normal
             selection_dates = st.sidebar.multiselect("📅 Filtrer par Date(s) :", dates_disponibles)
             for col in cols_infos[:3]:
                 if col in df.columns:
@@ -139,13 +145,13 @@ if source:
             
             dates_to_show = selection_dates if selection_dates else dates_disponibles
             df_affichage = df[cols_infos + dates_to_show]
+            
+            st.subheader(f"Détail : {choix_feuille}")
             st.dataframe(df_affichage, use_container_width=True, height=500)
 
-        # Export
-        output = io.BytesIO()
-        df_export = df_final if btn_focus else df_affichage
-        df_export.to_excel(output, index=False)
-        st.sidebar.download_button("📥 Télécharger ce tableau", data=output.getvalue(), file_name=f"Focus_{choix_feuille}.xlsx")
+            # Export
+            output = io.BytesIO()
+            df_affichage.to_excel(output, index=False)
+            st.sidebar.download_button("📥 Télécharger ce tableau", data=output.getvalue(), file_name=f"Focus_{choix_feuille}.xlsx")
 else:
-    st.info("👋 Veuillez charger un fichier Excel.")
-
+    st.info("👋 Veuillez charger un fichier Excel pour commencer.")
