@@ -36,17 +36,18 @@ with col_titre:
 st.markdown("---")
 
 
-# --- 3. CHARGEMENT DES DONNÉES ---
+# --- 3. CHARGEMENT DES DONNÉES (UNIFIÉ POUR ACP & ACS) ---
 @st.cache_data
 def charger_data(file, sheet):
     try:
         df = pd.read_excel(file, sheet_name=sheet, header=None, engine='openpyxl')
         df = df.dropna(how='all', axis=0).dropna(how='all', axis=1).reset_index(drop=True)
         
-        # Correction pour les dates : On cherche la ligne qui contient "/"
-        idx_header = 1
-        for i in range(min(5, len(df))):
-            if df.iloc[i].astype(str).str.contains("/").any():
+        # Détection dynamique de la ligne d'en-tête (Dates) pour ACP et ACS
+        idx_header = 0
+        for i in range(min(10, len(df))):
+            # On cherche la ligne qui contient des dates au format 01/01/26 ou similaire
+            if df.iloc[i].astype(str).str.contains(r'\d{2}/\d{2}', regex=True).any():
                 idx_header = i
                 break
         
@@ -57,7 +58,8 @@ def charger_data(file, sheet):
         counts = {}
         for i, col in enumerate(headers):
             c_str = str(col).strip()
-            if c_str == "nan" or c_str == "": c_str = f"Info_{i}"
+            if c_str == "nan" or c_str == "Info": c_str = f"Info_{i}"
+            
             if c_str in counts:
                 counts[c_str] += 1
                 new_cols.append(f"{c_str}_{counts[c_str]}")
@@ -66,27 +68,25 @@ def charger_data(file, sheet):
                 new_cols.append(c_str)
         
         df_data.columns = new_cols
-        
-        # Traitement spécifique demandé pour ProductionPlanning
-        if sheet == "ProductionPlanning":
-            # Supprimer colonnes A et B (indices 0 et 1)
-            df_data = df_data.iloc[:, 2:]
-            # Garder "atterissage ACP 29" sur la première ligne
-            if not df_data.empty:
-                # On force la valeur dans la colonne Info_2 (ajustée après suppression)
-                col_target = [c for c in df_data.columns if "Info" in c][1]
-                df_data.iloc[0, df_data.columns.get_loc(col_target)] = "atterissage ACP 29"
 
-        # Remplissage des cellules fusionnées
+        # Traitement spécifique pour ProductionPlanning (Suppression A & B + Titre)
+        if sheet == "ProductionPlanning":
+            df_data = df_data.iloc[:, 2:]
+            if not df_data.empty:
+                cols_inf = [c for c in df_data.columns if "Info" in c]
+                if len(cols_inf) > 1:
+                    df_data.iloc[0, df_data.columns.get_loc(cols_inf[1])] = "atterissage ACP 29"
+
+        # Remplissage des cellules fusionnées pour toutes les feuilles
         for c in df_data.columns[:8]: 
             df_data[c] = df_data[c].ffill()
             
-        return df_data
+        return df_data.reset_index(drop=True)
     except Exception as e:
         return pd.DataFrame()
 
 
-# --- 4. BARRE LATÉRALE (PILOTAGE) ---
+# --- 4. BARRE LATÉRALE ---
 st.sidebar.title("🚀 Pilotage S&OE")
 uploaded_file = st.sidebar.file_uploader("Mettre à jour Excel", type=["xlsm", "xlsx"])
 
@@ -98,56 +98,35 @@ choix_feuille = st.sidebar.radio("Sélectionner la feuille :", ["ACP", "ACS", "P
 
 # --- 5. LOGIQUE PRINCIPALE ---
 if source:
-    df_brut = charger_data(source, choix_feuille)
-    if not df_brut.empty:
-        df = df_brut.copy()
-        # Identification des colonnes de dates (JJ/MM/AA ou format Excel date)
+    df = charger_data(source, choix_feuille)
+    if not df.empty:
+        # Identification des dates (contenant des chiffres et / ou -)
         dates_disponibles = [c for c in df.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
         cols_infos = [c for c in df.columns if c not in dates_disponibles]
         
-        # Conversion numérique
+        # Conversion numérique des données de dates
         for d_col in dates_disponibles:
             df[d_col] = pd.to_numeric(df[d_col], errors='coerce').fillna(0)
 
-        # --- FILTRES SIDEBAR ---
+        # --- FILTRES ---
         st.sidebar.markdown("---")
         selection_dates = st.sidebar.multiselect("📅 Filtrer par Date(s) :", dates_disponibles)
-
-        # Filtrage par colonnes Info
+        
         for col in cols_infos[:3]:
-            options = sorted(df[col].astype(str).unique())
-            selection = st.sidebar.multiselect(f"Sélectionner {col} :", options)
-            if selection: df = df[df[col].astype(str).isin(selection)]
+            opts = sorted(df[col].astype(str).unique())
+            sel = st.sidebar.multiselect(f"Filtrer {col} :", opts)
+            if sel: df = df[df[col].astype(str).isin(sel)]
 
         dates_a_afficher = selection_dates if selection_dates else dates_disponibles
         df_affichage = df[cols_infos + dates_a_afficher]
 
-        # --- CARTES KPI ---
-        valeur_totale = df[dates_a_afficher].sum().sum()
-        nb_lignes = len(df)
-        kpi1, kpi2, kpi3 = st.columns(3)
-        with kpi1:
-            st.markdown(f"<div class='kpi-card'><h3>Total Mesuré</h3><h2 style='color:#83B81A;'>{valeur_totale:,.2f} T</h2></div>", unsafe_allow_html=True)
-        with kpi2:
-            st.markdown(f"<div class='kpi-card'><h3>Lignes Actives</h3><h2>{nb_lignes}</h2></div>", unsafe_allow_html=True)
-        with kpi3:
-            st.markdown(f"<div class='kpi-card'><h3>Périodes</h3><h2>{len(dates_a_afficher)}</h2></div>", unsafe_allow_html=True)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        tab_vue, tab_graph = st.tabs(["📄 Vue Détaillée", "📊 Analyses Séparées"])
-
-        with tab_vue:
-            st.dataframe(df_affichage, use_container_width=True)
-
-        with tab_graph:
-            st.info("Sélectionnez des filtres pour analyser les données graphiquement.")
-            if len(dates_a_afficher) > 0:
-                st.line_chart(df[dates_a_afficher].T.sum(axis=1))
+        # --- AFFICHAGE ---
+        st.subheader(f"Tableau : {choix_feuille}")
+        st.dataframe(df_affichage, use_container_width=True, height=600)
 
         # Export
         output = io.BytesIO()
         df_affichage.to_excel(output, index=False)
         st.sidebar.download_button("📥 Télécharger Rapport", data=output.getvalue(), file_name=f"Rapport_{choix_feuille}.xlsx")
 else:
-    st.info("👋 Bonjour Monsieur Adil, veuillez charger un fichier Excel pour commencer.")
+    st.info("Veuillez charger un fichier Excel pour commencer.")
