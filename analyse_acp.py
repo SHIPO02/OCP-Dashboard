@@ -45,7 +45,7 @@ def charger_data(file, sheet):
         df = pd.read_excel(file, sheet_name=sheet, header=None, engine='openpyxl')
         df = df.dropna(how='all', axis=0).dropna(how='all', axis=1).reset_index(drop=True)
         
-        # Détection de la ligne d'en-tête (Dates)
+        # Détection de la ligne d'en-tête (Dates JJ/MM)
         idx_dates = 0
         for i in range(min(15, len(df))):
             if df.iloc[i].astype(str).str.contains(r'\d{2}/\d{2}', regex=True).any():
@@ -69,7 +69,7 @@ def charger_data(file, sheet):
         
         df_data.columns = new_cols
 
-        # Spécifique Production Planning (Suppression A et B)
+        # Spécifique Production Planning (Suppression A et B + Titre)
         if sheet == "ProductionPlanning":
             df_data = df_data.iloc[:, 2:]
             if not df_data.empty:
@@ -102,31 +102,34 @@ else:
 # --- 5. LOGIQUE PRINCIPALE ---
 def est_valide(val):
     s_val = str(val).strip().lower()
+    # On élimine : 0, None, nan, vide et les titres génériques "info"
     return val != 0 and pd.notna(val) and s_val not in ["", "none", "nan", "info"]
 
 if source:
     if btn_focus:
-        # --- MODE FOCUS GLOBAL (TOUTES LES FEUILLES) ---
+        # --- MODE FOCUS GLOBAL (LES 3 FEUILLES SUR UNE SEULE PAGE) ---
         for feuille in ["ACP", "ACS", "ProductionPlanning"]:
             df_brut = charger_data(source, feuille)
             if not df_brut.empty:
-                # Nettoyage des colonnes de dates pour calcul
+                # Nettoyage des dates pour calcul
                 dates_dispo = [c for c in df_brut.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
                 for d in dates_dispo:
                     df_brut[d] = pd.to_numeric(df_brut[d], errors='coerce').fillna(0)
                 
                 df_focus = df_brut.iloc[[0]].copy()
-                cols_a_garder = [c for c in df_focus.columns if est_valide(df_focus[c].iloc[0])]
-                df_final = df_focus[cols_a_garder]
+                
+                # NETTOYAGE STRICT : Supprimer TOUTES les colonnes vides de la ligne d'atterrissage
+                cols_utiles = [c for c in df_focus.columns if est_valide(df_focus[c].iloc[0])]
+                df_final = df_focus[cols_utiles]
                 
                 st.markdown(f'<div class="header-vert">ATTERRISSAGE : {feuille}</div>', unsafe_allow_html=True)
                 if not df_final.empty:
                     st.table(df_final)
                 else:
-                    st.warning(f"Aucune donnée valide trouvée pour la feuille {feuille}")
+                    st.warning(f"Aucune donnée valide trouvée pour {feuille}")
                 st.markdown('<div class="spacer"></div>', unsafe_allow_html=True)
     else:
-        # --- MODE NORMAL (FEUILLE PAR FEUILLE) ---
+        # --- MODE NORMAL (FEUILLE PAR FEUILLE AVEC FILTRES) ---
         df_brut = charger_data(source, choix_feuille)
         if not df_brut.empty:
             df = df_brut.copy()
