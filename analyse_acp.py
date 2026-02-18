@@ -68,11 +68,11 @@ def charger_data(file, sheet):
         
         df_data.columns = new_cols
 
-        # Traitement spécifique Production Planning
+        # Spécifique Production Planning (Suppression A et B)
         if sheet == "ProductionPlanning":
             df_data = df_data.iloc[:, 2:]
             if not df_data.empty:
-                col_target = "Info_3" if "Info_3" in df_data.columns else df_data.columns[1]
+                col_target = [c for c in df_data.columns if "Info" in c][1] if len([c for c in df_data.columns if "Info" in c]) > 1 else df_data.columns[0]
                 df_data[col_target] = df_data[col_target].astype(object)
                 df_data.loc[1:, col_target] = None 
                 df_data.loc[0, col_target] = "atterissage ACP 29"
@@ -100,34 +100,36 @@ if source:
     if not df_brut.empty:
         df = df_brut.copy()
         
+        # Identification des colonnes de dates
         dates_disponibles = [c for c in df.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
         cols_infos = [c for c in df.columns if c not in dates_disponibles]
         
-        # Nettoyage numérique
+        # Nettoyage numérique des colonnes de dates
         for d_col in dates_disponibles:
             df[d_col] = pd.to_numeric(df[d_col], errors='coerce').fillna(0)
 
         if btn_focus:
-            # --- MODE FOCUS NETTOYÉ ---
-            st.markdown(f'<div class="header-vert">RÉCAPITULATIF : {choix_feuille}</div>', unsafe_allow_html=True)
-            
+            # --- NETTOYAGE STRICT DES COLONNES VIDES ---
             df_focus = df.iloc[[0]].copy()
             
-            # 1. On ne garde que les dates avec une valeur > 0
-            cols_dates_actives = [c for c in dates_disponibles if df_focus[c].iloc[0] != 0]
+            # On ne garde que les colonnes où la valeur n'est ni 0, ni None, ni vide
+            def est_valide(val):
+                s_val = str(val).strip().lower()
+                return val != 0 and pd.notna(val) and s_val != "" and s_val != "none" and s_val != "nan"
+
+            cols_a_garder = [c for c in df_focus.columns if est_valide(df_focus[c].iloc[0])]
             
-            # 2. On ne garde que les colonnes Info qui ne sont PAS vides (None ou "")
-            cols_info_actives = [c for c in cols_infos if pd.notna(df_focus[c].iloc[0]) and str(df_focus[c].iloc[0]).strip() != ""]
+            df_final = df_focus[cols_a_garder]
             
-            # 3. Assemblage final
-            df_final = df_focus[cols_info_actives + cols_dates_actives]
+            st.markdown(f'<div class="header-vert">RÉCAPITULATIF ATTERRISSAGE : {choix_feuille}</div>', unsafe_allow_html=True)
             
             if not df_final.empty:
+                # Affichage propre sans colonnes inutiles
                 st.table(df_final)
             else:
-                st.warning("Aucune donnée avec valeur trouvée sur la première ligne.")
+                st.warning("Aucune donnée avec valeur trouvée pour cette ligne.")
         else:
-            # --- MODE NORMAL ---
+            # Mode normal
             selection_dates = st.sidebar.multiselect("📅 Filtrer par Date(s) :", dates_disponibles)
             for col in cols_infos[:3]:
                 if col in df.columns:
@@ -141,8 +143,8 @@ if source:
 
         # Export
         output = io.BytesIO()
-        df_final_export = df_final if btn_focus else df_affichage
-        df_final_export.to_excel(output, index=False)
+        df_export = df_final if btn_focus else df_affichage
+        df_export.to_excel(output, index=False)
         st.sidebar.download_button("📥 Télécharger ce tableau", data=output.getvalue(), file_name=f"Focus_{choix_feuille}.xlsx")
 else:
-    st.info("Veuillez charger un fichier Excel.")
+    st.info("👋 Veuillez charger un fichier Excel.")
