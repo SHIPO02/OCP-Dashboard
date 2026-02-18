@@ -42,49 +42,71 @@ def charger_data(file, sheet):
         df = pd.read_excel(file, sheet_name=sheet, header=None, engine='openpyxl')
         df = df.dropna(how='all', axis=0).dropna(how='all', axis=1).reset_index(drop=True)
         
-        # Détection de la ligne d'en-tête pour ACP et ACS (recherche de la ligne avec les dates)
-        idx_header = 1
-        for i in range(min(10, len(df))):
-            if df.iloc[i].astype(str).str.contains(r'\d{2}/\d{2}', regex=True).any():
-                idx_header = i
-                break
-        
-        headers = df.iloc[idx_header].fillna("Info").tolist()
-        df_data = df.iloc[idx_header + 1:].copy()
-        
-        new_cols = []
-        counts = {}
-        for i, col in enumerate(headers):
-            c_str = str(col).strip()
-            if c_str == "nan" or c_str == "Info": c_str = f"Info_{i}"
-            if c_str in counts:
-                counts[c_str] += 1
-                new_cols.append(f"{c_str}_{counts[c_str]}")
-            else:
-                counts[c_str] = 0
-                new_cols.append(c_str)
-        
-        df_data.columns = new_cols
-
-        # Logique spécifique pour ProductionPlanning
+        # --- LOGIQUE SPÉCIFIQUE PRODUCTION PLANNING ---
         if sheet == "ProductionPlanning":
-            # Supprimer les colonnes A et B
+            # On cherche la ligne des dates (ex: 01/01/26) qui est généralement en haut
+            idx_dates = 0
+            for i in range(len(df)):
+                if df.iloc[i].astype(str).str.contains(r'\d{2}/\d{2}', regex=True).any():
+                    idx_dates = i
+                    break
+            
+            # Récupération des en-têtes (Dates)
+            headers = df.iloc[idx_dates].fillna("Info").tolist()
+            df_data = df.iloc[idx_dates + 1:].copy()
+            
+            new_cols = []
+            counts = {}
+            for i, col in enumerate(headers):
+                c_str = str(col).strip()
+                if c_str == "nan" or c_str == "Info": c_str = f"Info_{i}"
+                if c_str in counts:
+                    counts[c_str] += 1
+                    new_cols.append(f"{c_str}_{counts[c_str]}")
+                else:
+                    counts[c_str] = 0
+                    new_cols.append(c_str)
+            
+            df_data.columns = new_cols
+            
+            # On supprime les colonnes A et B (indices 0 et 1)
             df_data = df_data.iloc[:, 2:]
+            
+            # Injection de "atterissage ACP 29" à la ligne 0
             if not df_data.empty:
-                # Placer "atterissage ACP 29" au niveau de la ligne 0, colonne Info_2
                 cols_inf = [c for c in df_data.columns if "Info" in c]
                 if len(cols_inf) > 1:
                     df_data.iloc[0, df_data.columns.get_loc(cols_inf[1])] = "atterissage ACP 29"
-
-        # Remplissage des cellules fusionnées pour toutes les feuilles
-        for c in df_data.columns[:8]: 
-            df_data[c] = df_data[c].ffill()
             
-        return df_data.reset_index(drop=True)
+            # Remplissage automatique pour les colonnes de gauche
+            for c in df_data.columns[:8]:
+                df_data[c] = df_data[c].ffill()
+            
+            return df_data.reset_index(drop=True)
+
+        # --- LOGIQUE ORIGINALE (ACP / ACS) ---
+        else:
+            headers = df.iloc[1].fillna("Info").tolist()
+            df_data = df.iloc[2:].copy()
+            new_cols = []
+            counts = {}
+            for col in headers:
+                c_str = str(col).strip()
+                if c_str in counts:
+                    counts[c_str] += 1
+                    new_cols.append(f"{c_str}_{counts[c_str]}")
+                else:
+                    counts[c_str] = 0
+                    new_cols.append(c_str)
+            df_data.columns = new_cols
+            for c in df_data.columns[:6]: 
+                df_data[c] = df_data[c].ffill()
+            return df_data
+
     except Exception as e:
         return pd.DataFrame()
 
-# --- 4. BARRE LATÉRALE (PILOTAGE) ---
+# --- 4. BARRE LATÉRALE ---
 st.sidebar.title("🚀 Pilotage S&OE")
 uploaded_file = st.sidebar.file_uploader("Mettre à jour Excel", type=["xlsm", "xlsx"])
 
@@ -100,7 +122,7 @@ if source:
     if not df_brut.empty:
         df = df_brut.copy()
         
-        # Identification des colonnes de dates
+        # Identification des dates
         dates_disponibles = [c for c in df.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
         cols_infos = [c for c in df.columns if c not in dates_disponibles]
         
@@ -112,7 +134,6 @@ if source:
         st.sidebar.markdown("---")
         selection_dates = st.sidebar.multiselect("📅 Filtrer par Date(s) :", dates_disponibles)
 
-        # Filtrage par colonnes Info
         for col in cols_infos[:3]:
             if col in df.columns:
                 options = sorted(df[col].astype(str).unique())
@@ -135,24 +156,16 @@ if source:
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        tab_vue, tab_graph = st.tabs(["📄 Vue Détaillée", "📊 Analyses Séparées"])
+        tab_vue, tab_graph = st.tabs(["📄 Vue Détaillée", "📊 Analyses"])
 
         with tab_vue:
-            st.dataframe(df_affichage, use_container_width=True)
+            st.dataframe(df_affichage, use_container_width=True, height=600)
 
         with tab_graph:
-            # Recherche flexible pour le graphique ACP 29
-            target_col = "Info_2" if "Info_2" in df.columns else (cols_infos[1] if len(cols_infos)>1 else None)
-            if target_col:
-                mask_acp = df[target_col].astype(str).str.contains("ACP 29", case=False, na=False)
-                df_acp = df[mask_acp].copy()
-                if not df_acp.empty:
-                    st.subheader("Analyse ACP 29")
-                    st.line_chart(df_acp[dates_a_afficher].T.sum(axis=1))
-                else:
-                    st.info("Aucune donnée ACP 29 pour le graphique.")
+            if len(dates_a_afficher) > 0:
+                st.line_chart(df[dates_a_afficher].T.sum(axis=1))
 
-        # Export Sidebar
+        # Export
         output = io.BytesIO()
         df_affichage.to_excel(output, index=False)
         st.sidebar.download_button("📥 Télécharger Rapport", data=output.getvalue(), file_name=f"Rapport_{choix_feuille}.xlsx")
