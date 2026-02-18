@@ -20,7 +20,9 @@ st.markdown("""
     font-weight: bold;
     text-align: center;
     font-size: 18px;
+    margin-top: 10px;
 }
+.spacer { margin-bottom: 40px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -36,7 +38,7 @@ with col_titre:
 
 st.markdown("---")
 
-# --- 3. CHARGEMENT DES DONNÉES ---
+# --- 3. FONCTIONS DE CHARGEMENT ET FILTRAGE ---
 @st.cache_data
 def charger_data(file, sheet):
     try:
@@ -68,7 +70,7 @@ def charger_data(file, sheet):
         
         df_data.columns = new_cols
 
-        # Spécifique Production Planning (Suppression A et B)
+        # Spécifique Production Planning (Suppression colonnes A et B)
         if sheet == "ProductionPlanning":
             df_data = df_data.iloc[:, 2:]
             if not df_data.empty:
@@ -81,6 +83,10 @@ def charger_data(file, sheet):
     except Exception as e:
         return pd.DataFrame()
 
+def est_valide(val):
+    s_val = str(val).strip().lower()
+    return val != 0 and pd.notna(val) and s_val not in ["", "none", "nan", "info"]
+
 # --- 4. BARRE LATÉRALE ---
 st.sidebar.title("🚀 Pilotage S&OE")
 uploaded_file = st.sidebar.file_uploader("Mettre à jour Excel", type=["xlsm", "xlsx"])
@@ -89,47 +95,55 @@ dossier = os.path.dirname(os.path.abspath(__file__))
 local_file = os.path.join(dossier, "Inventory Projection.xlsm")
 source = uploaded_file if uploaded_file else (local_file if os.path.exists(local_file) else None)
 
-choix_feuille = st.sidebar.radio("Sélectionner la feuille :", ["ACP", "ACS", "ProductionPlanning"])
-
 st.sidebar.markdown("---")
-btn_focus = st.sidebar.toggle("🎯 Focus Atterrissage (Ligne 1)")
+btn_focus = st.sidebar.toggle("🎯 Atterrissage Global")
+
+if not btn_focus:
+    choix_feuille = st.sidebar.radio("Sélectionner la feuille :", ["ACP", "ACS", "ProductionPlanning"])
+else:
+    st.sidebar.info("Vue consolidée de toutes les feuilles activée.")
 
 # --- 5. LOGIQUE PRINCIPALE ---
 if source:
-    df_brut = charger_data(source, choix_feuille)
-    if not df_brut.empty:
-        df = df_brut.copy()
+    if btn_focus:
+        # --- VUE : ATTERRISSAGE GLOBAL ---
+        st.subheader("📊 Atterrissage Global")
         
-        # Identification des colonnes de dates
-        dates_disponibles = [c for c in df.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
-        cols_infos = [c for c in df.columns if c not in dates_disponibles]
-        
-        # Nettoyage numérique des colonnes de dates
-        for d_col in dates_disponibles:
-            df[d_col] = pd.to_numeric(df[d_col], errors='coerce').fillna(0)
+        for feuille in ["ACP", "ACS", "ProductionPlanning"]:
+            df_feuille = charger_data(source, feuille)
+            if not df_feuille.empty:
+                # Identification et nettoyage numérique des dates
+                dates_dispo = [c for c in df_feuille.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
+                for d in dates_dispo:
+                    df_feuille[d] = pd.to_numeric(df_feuille[d], errors='coerce').fillna(0)
+                
+                # Extraction de la ligne 1 (index 0)
+                df_focus = df_feuille.iloc[[0]].copy()
+                
+                # Filtrage strict des colonnes vides ou à 0
+                cols_utiles = [c for c in df_focus.columns if est_valide(df_focus[c].iloc[0])]
+                df_final = df_focus[cols_utiles]
+                
+                # Affichage
+                st.markdown(f'<div class="header-vert">ATTERRISSAGE : {feuille}</div>', unsafe_allow_html=True)
+                if not df_final.empty:
+                    st.table(df_final)
+                else:
+                    st.warning(f"Aucune donnée active détectée pour la feuille {feuille}")
+                st.markdown('<div class="spacer"></div>', unsafe_allow_html=True)
+    
+    else:
+        # --- VUE : NORMALE (PAR FEUILLE) ---
+        df_brut = charger_data(source, choix_feuille)
+        if not df_brut.empty:
+            df = df_brut.copy()
+            dates_disponibles = [c for c in df.columns if any(char.isdigit() for char in str(c)) and ('/' in str(c) or '-' in str(c))]
+            cols_infos = [c for c in df.columns if c not in dates_disponibles]
+            
+            for d_col in dates_disponibles:
+                df[d_col] = pd.to_numeric(df[d_col], errors='coerce').fillna(0)
 
-        if btn_focus:
-            # --- NETTOYAGE STRICT DES COLONNES VIDES ---
-            df_focus = df.iloc[[0]].copy()
-            
-            # On ne garde que les colonnes où la valeur n'est ni 0, ni None, ni vide
-            def est_valide(val):
-                s_val = str(val).strip().lower()
-                return val != 0 and pd.notna(val) and s_val != "" and s_val != "none" and s_val != "nan"
-
-            cols_a_garder = [c for c in df_focus.columns if est_valide(df_focus[c].iloc[0])]
-            
-            df_final = df_focus[cols_a_garder]
-            
-            st.markdown(f'<div class="header-vert">RÉCAPITULATIF ATTERRISSAGE : {choix_feuille}</div>', unsafe_allow_html=True)
-            
-            if not df_final.empty:
-                # Affichage propre sans colonnes inutiles
-                st.table(df_final)
-            else:
-                st.warning("Aucune donnée avec valeur trouvée pour cette ligne.")
-        else:
-            # Mode normal
+            # Filtres classiques
             selection_dates = st.sidebar.multiselect("📅 Filtrer par Date(s) :", dates_disponibles)
             for col in cols_infos[:3]:
                 if col in df.columns:
@@ -139,13 +153,14 @@ if source:
             
             dates_to_show = selection_dates if selection_dates else dates_disponibles
             df_affichage = df[cols_infos + dates_to_show]
+            
+            st.markdown(f"### Détail : {choix_feuille}")
             st.dataframe(df_affichage, use_container_width=True, height=500)
 
-        # Export
-        output = io.BytesIO()
-        df_export = df_final if btn_focus else df_affichage
-        df_export.to_excel(output, index=False)
-        st.sidebar.download_button("📥 Télécharger ce tableau", data=output.getvalue(), file_name=f"Focus_{choix_feuille}.xlsx")
+            # Export
+            output = io.BytesIO()
+            df_affichage.to_excel(output, index=False)
+            st.sidebar.download_button("📥 Télécharger ce tableau", data=output.getvalue(), file_name=f"Data_{choix_feuille}.xlsx")
 else:
-    st.info("👋 Veuillez charger un fichier Excel.")
+    st.info("👋 Veuillez charger un fichier Excel pour générer l'Atterrissage Global.")
 
