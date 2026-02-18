@@ -26,7 +26,7 @@ st.markdown("""
 # --- 2. EN-TÊTE ---
 col_logo, col_titre = st.columns([1, 4])
 with col_logo:
-    img_path = "logo_ocp.png" if os.path.exists("logo_ocp.png") else "logo_ocp.png.png"
+    img_path = "logo_ocp.png"
     if os.path.exists(img_path):
         st.image(img_path, width=140)
 with col_titre:
@@ -36,14 +36,26 @@ with col_titre:
 st.markdown("---")
 
 
-# --- 3. CHARGEMENT DES DONNÉES ---
+# --- 3. CHARGEMENT DES DONNÉES (VERSION CORRIGÉE) ---
 @st.cache_data
 def charger_data(file, sheet):
     try:
+        # Lecture brute
         df = pd.read_excel(file, sheet_name=sheet, header=None, engine='openpyxl')
         df = df.dropna(how='all', axis=0).dropna(how='all', axis=1).reset_index(drop=True)
-        headers = df.iloc[1].fillna("Info").tolist()
-        df_data = df.iloc[2:].copy()
+
+        # Détection de la ligne d'en-tête (cherche la ligne avec des dates ou 'Production plan')
+        header_row = 0
+        for i in range(len(df)):
+            row_str = df.iloc[i].astype(str).values
+            if any("01/" in s or "Production plan" in s for s in row_str):
+                header_row = i
+                break
+        
+        # Définition des colonnes
+        headers = df.iloc[header_row].fillna("Info").tolist()
+        df_data = df.iloc[header_row + 1:].copy()
+        
         new_cols = []
         counts = {}
         for col in headers:
@@ -54,14 +66,20 @@ def charger_data(file, sheet):
             else:
                 counts[c_str] = 0
                 new_cols.append(c_str)
+        
         df_data.columns = new_cols
-        for c in df_data.columns[:6]: df_data[c] = df_data[c].ffill()
-        return df_data
+        
+        # REMPLISSAGE DES CELLULES FUSIONNÉES (Crucial pour l'affichage complet)
+        cols_infos = [c for c in df_data.columns if "Info" in c or "Production" in c or "OIJ" in str(c)]
+        df_data[cols_infos] = df_data[cols_infos].ffill()
+        
+        return df_data.reset_index(drop=True)
     except Exception as e:
+        st.error(f"Erreur de lecture : {e}")
         return pd.DataFrame()
 
 
-# --- 4. BARRE LATÉRALE (PILOTAGE) ---
+# --- 4. BARRE LATÉRALE ---
 st.sidebar.title("🚀 Pilotage S&OE")
 uploaded_file = st.sidebar.file_uploader("Mettre à jour Excel", type=["xlsm", "xlsx"])
 
@@ -73,87 +91,46 @@ choix_feuille = st.sidebar.radio("Sélectionner la feuille :", ["ACP", "ACS", "P
 
 # --- 5. LOGIQUE PRINCIPALE ---
 if source:
-    df_brut = charger_data(source, choix_feuille)
-    if not df_brut.empty:
-        df = df_brut.copy()
-        # Identification des colonnes de dates
-        dates_disponibles = [c for c in df.columns if any(char.isdigit() for char in str(c)) and '-' in str(c)]
-        cols_infos = [c for c in df.columns if c not in dates_disponibles]
-        df[dates_disponibles] = df[dates_disponibles].apply(pd.to_numeric, errors='coerce').fillna(0)
+    df = charger_data(source, choix_feuille)
+    if not df.empty:
+        # Séparation Infos vs Dates
+        cols_infos = [c for c in df.columns if any(x in str(c) for x in ["Info", "Production", "Total", "Product", "Volume"])]
+        dates_disponibles = [c for c in df.columns if c not in cols_infos]
+        
+        # Nettoyage numérique des dates
+        for d in dates_disponibles:
+            df[d] = pd.to_numeric(df[d], errors='coerce').fillna(0)
 
-        # --- FILTRES SIDEBAR ---
+        # Filtres dynamiques
         st.sidebar.markdown("---")
-        # Filtrage par dates (Multi-sélection)
-        selection_dates = st.sidebar.multiselect("📅 Filtrer par Date(s) :", dates_disponibles,
-                                                 help="Laissez vide pour tout afficher (All)")
+        for col in cols_infos[:3]:
+            options = sorted(df[col].astype(str).unique())
+            sel = st.sidebar.multiselect(f"Filtrer {col}", options)
+            if sel: df = df[df[col].astype(str).isin(sel)]
 
-        # Filtrage par colonnes Info
-        for col in ["Info_1", "Info_2", "Info_3"]:
-            if col in df.columns:
-                options = sorted(df[col].astype(str).unique())
-                selection = st.sidebar.multiselect(f"Sélectionner {col} :", options)
-                if selection: df = df[df[col].astype(str).isin(selection)]
-
-        # Si des dates sont sélectionnées, on ne garde que ces colonnes + les infos
+        selection_dates = st.sidebar.multiselect("📅 Sélection Dates :", dates_disponibles)
         dates_a_afficher = selection_dates if selection_dates else dates_disponibles
+        
         df_affichage = df[cols_infos + dates_a_afficher]
 
-        # --- CARTES KPI ---
-        valeur_totale = df[dates_a_afficher].sum().sum()
-        nb_lignes = len(df)
-        kpi1, kpi2, kpi3 = st.columns(3)
-        with kpi1:
-            st.markdown(
-                f"<div class='kpi-card'><h3>Total Mesuré</h3><h2 style='color:#83B81A;'>{valeur_totale:,.2f} T</h2></div>",
-                unsafe_allow_html=True)
-        with kpi2:
-            st.markdown(f"<div class='kpi-card'><h3>Lignes Actives</h3><h2>{nb_lignes}</h2></div>",
-                        unsafe_allow_html=True)
-        with kpi3:
-            st.markdown(f"<div class='kpi-card'><h3>Périodes</h3><h2>{len(dates_a_afficher)}</h2></div>",
-                        unsafe_allow_html=True)
+        # KPIs
+        val_tot = df[dates_a_afficher].sum().sum()
+        k1, k2 = st.columns(2)
+        k1.metric("Total Mesuré", f"{val_tot:,.0f} T")
+        k2.metric("Lignes affichées", len(df))
 
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        tab_vue, tab_graph = st.tabs(["📄 Vue Détaillée", "📊 Analyses Séparées"])
-
+        tab_vue, tab_graph = st.tabs(["📄 Vue Détaillée", "📊 Analyses"])
         with tab_vue:
-            st.dataframe(df_affichage, use_container_width=True)
-
+            st.dataframe(df_affichage, use_container_width=True, height=600)
+        
         with tab_graph:
-            mask_acp = (df["Info_2"].astype(str).str.contains("ACP 29", case=False, na=False)) | \
-                       (df["Info_3"].astype(str).str.contains("ACP 29", case=False, na=False))
-            df_acp = df[mask_acp].copy()
+            st.info("Sélectionnez des données pour générer les graphiques.")
+            if len(dates_a_afficher) > 0:
+                st.line_chart(df[dates_a_afficher].T.sum(axis=1))
 
-            if not df_acp.empty:
-                st.subheader("Analyse sur la sélection temporelle")
-
-                col_left, col_right = st.columns(2)
-
-                with col_left:
-                    # --- PRODUCTION ---
-                    st.markdown("#### 🟢 Production par Unité")
-                    df_p = df_acp[df_acp["Info_3"].astype(str).str.contains("Prod", case=False)]
-                    if not df_p.empty:
-                        st.bar_chart(df_p.groupby("Info_1")[dates_a_afficher].sum().sum(axis=1), color="#83B81A")
-                    else:
-                        st.info("Aucune prod.")
-
-                with col_right:
-                    # --- STOCK ---
-                    st.markdown("#### 🟠 Stock Moyen par Unité")
-                    df_s = df_acp[df_acp["Info_3"].astype(str).str.contains("Stock", case=False)]
-                    if not df_s.empty:
-                        st.bar_chart(df_s.groupby("Info_1")[dates_a_afficher].mean().mean(axis=1), color="#FF8C00")
-                    else:
-                        st.info("Aucun stock.")
-            else:
-                st.warning("Données ACP 29 introuvables.")
-
-        # Export Sidebar
+        # Export
         output = io.BytesIO()
         df_affichage.to_excel(output, index=False)
-        st.sidebar.markdown("---")
-        st.sidebar.download_button("📥 Télécharger Rapport", data=output.getvalue(), file_name="Rapport_OCP_S&OE.xlsx")
+        st.sidebar.download_button("📥 Télécharger Rapport", data=output.getvalue(), file_name="Rapport_OCP.xlsx")
 else:
-    st.info("👋 Bonjour Monsieur Adil, veuillez charger un fichier Excel pour commencer.")
+    st.info("Veuillez charger un fichier Excel.")
