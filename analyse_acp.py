@@ -9,14 +9,7 @@ st.set_page_config(page_title="OCP - Dashboard S&OE Expert", layout="wide")
 st.markdown("""
     <style>
     [data-testid="stSidebar"] { background-color: #83B81A; }
-    .kpi-card {
-        background-color: #f8f9fa;
-        padding: 20px;
-        border-radius: 10px;
-        border-left: 5px solid #83B81A;
-        text-align: center;
-        box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
-    }
+    .title-ocp { color: #83B81A; font-weight: bold; font-size: 24px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -34,14 +27,14 @@ def charger_data(file, sheet):
     try:
         df_raw = pd.read_excel(file, sheet_name=sheet, header=None, engine='openpyxl')
         
-        # 1. Identifier la ligne des dates
+        # 1. Identifier la ligne des dates (ex: 01/01/26)
         idx_dates = 0
         for i in range(min(15, len(df_raw))):
             if df_raw.iloc[i].astype(str).str.contains(r'\d{2}/\d{2}', regex=True).any():
                 idx_dates = i
                 break
         
-        # 2. Préparation des colonnes
+        # 2. Construction des noms de colonnes
         row_dates = df_raw.iloc[idx_dates].fillna("")
         row_sub = df_raw.iloc[idx_dates + 1].fillna("")
         
@@ -54,6 +47,7 @@ def charger_data(file, sheet):
                 name = d_str.split(" ")[0]
             final_cols.append(name)
 
+        # Gérer les doublons de noms (Info_1, Info_2...)
         counts = {}
         processed_cols = []
         for c in final_cols:
@@ -64,19 +58,16 @@ def charger_data(file, sheet):
                 counts[c] = 0
                 processed_cols.append(c)
 
-        # 3. Création du DataFrame et ffill
+        # 3. Création du DataFrame
         df = df_raw.iloc[idx_dates + 2:].copy()
         df.columns = processed_cols
+        
+        # Remplissage des cellules fusionnées (OIJ Old, etc.)
         df.iloc[:, 0:10] = df.iloc[:, 0:10].ffill()
         
         # 4. SUPPRESSION DES COLONNES A ET B (Indices 0 et 1)
         df = df.iloc[:, 2:]
         
-        # 5. FILTRE STRICT SUR "atterissage ACP 29"
-        # On cherche dans toutes les colonnes d'info si le texte existe
-        mask = df.astype(str).apply(lambda x: x.str.contains("atterissage ACP 29", case=False, na=False)).any(axis=1)
-        df = df[mask]
-
         return df.dropna(how='all', axis=0).reset_index(drop=True)
     except Exception as e:
         st.error(f"Erreur : {e}")
@@ -90,21 +81,41 @@ source = uploaded_file if uploaded_file else (local_file if os.path.exists(local
 choix_feuille = st.sidebar.radio("Sélectionner la feuille :", ["ProductionPlanning", "ACP", "ACS"])
 
 if source:
-    df_affichage = charger_data(source, choix_feuille)
+    df = charger_data(source, choix_feuille)
     
-    if not df_affichage.empty:
-        # Nettoyage visuel : retirer les colonnes qui ne sont que des "None" ou vides
-        df_affichage = df_affichage.loc[:, (df_affichage != "None").any(axis=0)]
+    if not df.empty:
+        # Identification des colonnes
+        cols_dates = [c for c in df.columns if any(char.isdigit() for char in c) and ("/" in c or "-" in c)]
+        cols_info = [c for c in df.columns if c not in cols_dates]
+
+        # --- FILTRES SIDEBAR ---
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("Filtres")
         
-        st.subheader(f"Planning : {choix_feuille}")
-        st.write("Affichage filtré sur : **atterissage ACP 29**")
+        # Filtre par Date
+        sel_dates = st.sidebar.multiselect("📅 Sélectionner Dates", cols_dates)
+        dates_to_show = sel_dates if sel_dates else cols_dates
         
-        # Affichage
-        st.dataframe(df_affichage, use_container_width=True, height=600)
+        # Filtres par Info (ex: Info_3, Info_4...)
+        df_filtered = df.copy()
+        for col in cols_info[:3]:
+            opts = sorted(df[col].unique().astype(str))
+            sel = st.sidebar.multiselect(f"Filtrer {col}", opts)
+            if sel:
+                df_filtered = df_filtered[df_filtered[col].astype(str).isin(sel)]
+
+        # --- AFFICHAGE ---
+        # Affichage du titre demandé comme en-tête de page et non dans le tableau
+        st.markdown('<p class="title-ocp">atterissage ACP 29</p>', unsafe_allow_html=True)
+        st.info(f"Feuille actuelle : {choix_feuille}")
+
+        # Affichage du tableau final sans les colonnes A et B
+        st.dataframe(df_filtered[cols_info + dates_to_show], use_container_width=True, height=600)
 
         # Export
         output = io.BytesIO()
-        df_affichage.to_excel(output, index=False)
-        st.sidebar.download_button("📥 Télécharger Rapport", data=output.getvalue(), file_name="Rapport_ACP29.xlsx")
+        df_filtered.to_excel(output, index=False)
+        st.sidebar.download_button("📥 Télécharger Rapport", data=output.getvalue(), file_name="Rapport_OCP.xlsx")
 else:
     st.info("Veuillez charger le fichier Excel.")
+
